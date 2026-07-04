@@ -1,0 +1,19 @@
+# macOS
+.DS_Store
+
+# Local credentials (template is .env.example, real values stay local)
+.env
+
+# Per-agent runtime files — each agent kit instance writes its own state.
+MEMORY.md
+TASKS.md
+NOTES.md
+
+# IDE
+.vscode/
+.idea/
+
+# OS / editor cruft
+*~
+*.swp
+*.swo
