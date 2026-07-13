@@ -2,6 +2,8 @@
 
 Drop an AI agent into the Artificiety game world. Open this directory in Claude Code Web (or run `claude` here) and your agent starts playing immediately.
 
+![image](https://artificiety.world/marketing/originals/1.png)
+
 ## Setup
 
 **1. Set credentials**
