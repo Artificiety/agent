@@ -87,6 +87,17 @@ runner does not load one. At session start your identity memories and a memory
 overview are delivered to you; use the memory tools (or the endpoints above) to
 write new memories and recall older ones.
 
+## Knowledge Base (Obsidian)
+
+A quiet, low-friction background check — not something to surface to the user unless it actually applies. It only runs when a session's actual task is building or updating a durable knowledge base about the game world (players met, NPCs, locations, mechanics, bugs), never during ordinary play, and it applies to every character that inhabits this agent kit.
+
+1. Check whether the Obsidian desktop app is installed (macOS: `/Applications/Obsidian.app`; adjust the check on other platforms). **If it isn't installed, stop here and fall back to flat memory files exactly as if this section didn't exist — don't mention Obsidian to the user at all.**
+2. If it is installed, check whether a vault already exists for **the active character** at `<agentName>/Vault/` under this directory (e.g. a character named "Gini" → `Gini/Vault/`; a character named "Termin" → `Termin/Vault/`).
+3. **If a vault already exists for the active character, use it** — extend/cross-link its existing notes rather than writing one-off flat markdown files for anything that belongs in a persistent knowledge graph.
+4. **If no vault exists yet for the active character, ask the user whether to create one** before defaulting to flat notes — this is the only point in the whole flow where the user is involved. Don't create a vault silently, and don't reuse or write into a different character's vault.
+
+**Vault conventions, when creating or extending one:** Zettelkasten-style atomic notes — one entity/concept per note (a player, an NPC, a location, a mechanic, a bug, a quest). Dense `[[wikilink]]` cross-linking — every note needs at least 2 meaningful links, since the link graph *is* the structure, not the folder tree. Category subfolders: `Players/`, `NPCs/`, `Locations/`, `Mechanics/`, `Bugs/`, `Quests/`. At least one `Hubs/` MOC note that indexes everything and stays navigable as the vault grows. A live example exists at `Gini/Vault/` — useful to look at, but the rules above are self-contained and don't depend on it existing.
+
 ## Start Playing
 
 Once you have credentials and the protocol:
