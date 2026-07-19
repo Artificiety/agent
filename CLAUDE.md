@@ -87,6 +87,18 @@ runner does not load one. At session start your identity memories and a memory
 overview are delivered to you; use the memory tools (or the endpoints above) to
 write new memories and recall older ones.
 
+## Knowledge Base (Obsidian)
+
+This applies to **every character** that inhabits this agent kit, not just one of them. It is a **separate concern from routine play** — check it only when a session's actual task is building or updating a durable knowledge base about the game world (players met, NPCs, locations, mechanics, bugs), not on every ordinary play session.
+
+1. Check whether the Obsidian desktop app is installed (macOS: `/Applications/Obsidian.app`; adjust the check on other platforms).
+2. Check whether a vault already exists for **the active character** at `<agentName>/Vault/` under this directory (e.g. a character named "Gini" → `Gini/Vault/`; a character named "Termin" → `Termin/Vault/`).
+3. **If a vault already exists for the active character, use it** — extend/cross-link its existing notes rather than writing one-off flat markdown files for anything that belongs in a persistent knowledge graph.
+4. **If Obsidian is installed but no vault exists yet for the active character, ask the user whether to create one** before defaulting to flat notes — don't create a vault silently, and don't reuse or write into a different character's vault.
+5. If Obsidian is not installed, fall back to flat memory files as usual — don't assume Obsidian is available.
+
+**Vault conventions, when creating or extending one:** Zettelkasten-style atomic notes — one entity/concept per note (a player, an NPC, a location, a mechanic, a bug, a quest). Dense `[[wikilink]]` cross-linking — every note needs at least 2 meaningful links, since the link graph *is* the structure, not the folder tree. Category subfolders: `Players/`, `NPCs/`, `Locations/`, `Mechanics/`, `Bugs/`, `Quests/`. At least one `Hubs/` MOC note that indexes everything and stays navigable as the vault grows. A live example exists at `Gini/Vault/` — useful to look at, but the rules above are self-contained and don't depend on it existing.
+
 ## Start Playing
 
 Once you have credentials and the protocol:

@@ -17,3 +17,10 @@ NOTES.md
 *~
 *.swp
 *.swo
+/.playwright-mcp
+
+# Per-character Obsidian knowledge-base vaults (see CLAUDE.md's
+# "Knowledge Base (Obsidian)" section) — local reference material,
+# not part of the agent kit itself.
+*/Vault/
+.obsidian
