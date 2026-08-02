@@ -354,6 +354,14 @@ def fight(client, target_id, flee_hp=None, approach=True, approach_tries=4,
     # watch loop below would ever get to check.
     if _below_flee(data, flee_hp):
         return {"status": "low_hp", "health": data.get("health"), "engaged": data.get("engaged")}
+    # Already fighting something else when called: the approach loop below is skipped
+    # entirely, so its target check never runs and we would watch the wrong fight for
+    # up to max_ticks. Same substitution as the mid-approach case, different entry.
+    eng_at_entry = (data.get("engaged") or {}).get("targetId")
+    if eng_at_entry and eng_at_entry != target_id:
+        return {"status": "new_threat", "engaged": data.get("engaged"),
+                "health": data.get("health"),
+                "message": "already engaged with a different creature"}
     tries = 0
     while not is_engaged(data):
         ent = _entity(data, target_id)

@@ -185,6 +185,14 @@ class Client:
         chosen = None
         if world_id:
             chosen = next((w for w in worlds if w.get("id") == world_id), None)
+            if not chosen:
+                # Reachable from SESSION_INVALID recovery with a cached world that has
+                # since been removed or had access revoked. Say so, rather than letting
+                # `chosen["id"]` below raise a bare TypeError past the error handling.
+                raise ArtificietyError(
+                    f"World '{world_id}' is no longer in this agent's world list — it may have "
+                    "been removed or access revoked. Joinable: "
+                    f"{', '.join(w.get('slug', '?') for w in joinable) or '(none)'}")
         elif slug:
             chosen = next((w for w in worlds if w.get("slug") == slug), None)
             if not chosen:
@@ -206,11 +214,11 @@ class Client:
                     "Multiple worlds and no clear default — pass a slug. Joinable: "
                     f"{', '.join(w.get('slug', '?') for w in joinable)}")
 
-        jr = self._request("POST", "/v1/agents/worlds/join", {"worldId": chosen["id"]})
-        jd = jr.get("data", jr) or {}
+        jd = self._unwrap(self._request("POST", "/v1/agents/worlds/join",
+                                        {"worldId": chosen["id"]}))
         sid = jd.get("sessionId")
         if not sid:
-            raise ArtificietyError(f"Join failed: {json.dumps(jr)[:300]}")
+            raise ArtificietyError(f"Join returned no session id: {json.dumps(jd)[:300]}")
         self.session_id = sid
         self.world_id = chosen["id"]
         agent = jd.get("agent") or {}
@@ -247,11 +255,16 @@ class Client:
             self.join(world_id=self.world_id) if self.world_id else self.join()
             return self.action(payload, _retried=True)
 
-        # Lost a concurrent-join race: our session is gone but a valid one exists.
-        # Re-read it rather than joining again into the same race.
+        # Lost a concurrent-join race: a valid session exists, it is just not ours.
+        # The winner persisted it under the same api-key-hashed path, so re-read that
+        # file first. Joining again would mint a third session and evict the winner —
+        # two toolkit processes on one key would then evict each other indefinitely.
         if code == "CONCURRENT_SESSION" and not _retried:
             time.sleep(1)
-            self.join(world_id=self.world_id) if self.world_id else self.join()
+            previous = self.session_id
+            self._load_session()
+            if self.session_id == previous:
+                self.join(world_id=self.world_id) if self.world_id else self.join()
             return self.action(payload, _retried=True)
 
         # World briefly unreachable, or any transient 5xx -> the action did NOT apply.
