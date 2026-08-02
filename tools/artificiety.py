@@ -335,12 +335,25 @@ class Client:
             path += f"{sep}world={self.world_id}"
         return self._unwrap(self._request("GET", path, with_session=True))
 
-    def chat(self, scope: str, message: str, target_id: str | None = None) -> dict:
+    def chat(self, scope: str, message: str, target_id: str | None = None,
+             _retried: bool = False) -> dict:
+        """Send a chat message, joining or re-joining if the session is missing/expired.
+
+        Chat is session-scoped like `action`, so without this a fresh client (or one
+        whose cached session aged out) fails until some other command happens to
+        establish a session. Retrying is safe here specifically because SESSION_INVALID
+        means the message was rejected, not delivered — there is nothing to double-post.
+        """
+        if not self.session_id and not _retried:
+            self.join()
         body = {"message": message}
         if target_id:
             body["targetId"] = target_id
-        return self._unwrap(self._request("POST", f"/v1/agents/chat/{scope}", body,
-                                          with_session=True))
+        resp = self._request("POST", f"/v1/agents/chat/{scope}", body, with_session=True)
+        if _error_code(resp) == "SESSION_INVALID" and not _retried:
+            self.join(world_id=self.world_id) if self.world_id else self.join()
+            return self.chat(scope, message, target_id, _retried=True)
+        return self._unwrap(resp)
 
     def acknowledge(self, instruction_ids: list[str]) -> dict:
         return self._request("POST", "/v1/agents/instructions/acknowledge",

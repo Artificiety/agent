@@ -86,6 +86,30 @@ def _gather_stop_reason(ar: dict) -> str | None:
     return None
 
 
+def _interrupt(data: dict, stop_on_instruction: bool = True, on_combat: bool = True):
+    """The hand-back check every bounded loop here owes its caller, in one place.
+
+    Returns a partial result dict when the snapshot contains a decision point, else
+    None. Callers merge their own fields (`gained`, `eaten`, vitals) into it.
+
+    This exists because the checks used to be written out per loop and per observation
+    point, and every round of review found another spot that had one and not the other:
+    an opening snapshot that skipped straight to the action, a final snapshot that
+    reported completion, a branch that returned before reaching them. One helper called
+    at every observation point is the only way that stops recurring.
+
+    `on_combat=False` for loops that are *supposed* to be in combat (fight), where
+    being engaged is the normal state rather than an interruption.
+    """
+    if stop_on_instruction:
+        pending = pending_instruction_ids(data)
+        if pending:
+            return {"status": "instruction", "instructionIds": pending}
+    if on_combat and is_engaged(data):
+        return {"status": "combat", "engaged": data.get("engaged")}
+    return None
+
+
 def _below_flee(data: dict, flee_hp) -> bool:
     """True when HP is at or under the caller's hand-back threshold (percent or absolute)."""
     if flee_hp is None:
@@ -112,7 +136,20 @@ def travel_to(client, x=None, y=None, entity_id=None, max_ticks=45,
 
     Stops (status) on: 'arrived', 'combat', 'instruction', 'no_path',
     'low_energy', 'low_satiety', 'target_lost', 'stalled', 'timeout'.
+
+    The result carries `ticks` — how much of the budget this call actually spent — so a
+    caller that walks more than once (fight's approach retries) can hold one ceiling
+    across the whole operation instead of handing out a fresh one per attempt.
     """
+    used = [0]
+    res = _travel(client, x, y, entity_id, max_ticks, max_hops, stall_limit,
+                  hop_tiles, stop_on_instruction, used)
+    res.setdefault("ticks", used[0])
+    return res
+
+
+def _travel(client, x, y, entity_id, max_ticks, max_hops, stall_limit,
+            hop_tiles, stop_on_instruction, used):
     if entity_id:
         target = {"type": "MOVE_TO", "targetId": entity_id}
     elif x is not None and y is not None:
@@ -131,6 +168,7 @@ def travel_to(client, x=None, y=None, entity_id=None, max_ticks=45,
     stall = 0
 
     for tick in range(max_ticks):
+        used[0] = tick + 1
         # handle a rejection from the last MOVE_TO issue
         if reason == "NO_PATH":
             return {"status": "no_path", "pos": _pos(data), "message": msg}
@@ -158,12 +196,9 @@ def travel_to(client, x=None, y=None, entity_id=None, max_ticks=45,
         time.sleep(TICK_SECONDS)
         data = client.look()
 
-        if stop_on_instruction and pending_instruction_ids(data):
-            return {"status": "instruction", "pos": _pos(data),
-                    "instructionIds": pending_instruction_ids(data)}
-        if is_engaged(data):
-            return {"status": "combat", "pos": _pos(data),
-                    "engaged": data.get("engaged")}
+        stop = _interrupt(data, stop_on_instruction)
+        if stop:
+            return {**stop, "pos": _pos(data)}
 
         for ev in (data.get("events") or []):
             if ev.get("type") == "waypoint.target_lost":
@@ -217,6 +252,9 @@ def gather(client, node_id, interaction=None, until=None, approach=True,
     'instruction', 'too_far', 'gone', 'timeout'. Reports `gained` (inventory delta).
     """
     data = client.look()
+    stop = _interrupt(data, stop_on_instruction)
+    if stop:
+        return {**stop, "gained": {}}
     node = _entity(data, node_id)
     if node is None:
         return {"status": "gone"}
@@ -235,7 +273,13 @@ def gather(client, node_id, interaction=None, until=None, approach=True,
         return {it.get("itemId"): it.get("quantity", 0)
                 for it in ((d.get("inventory") or {}).get("items") or [])}
 
-    before = inv_counts(client.look())
+    # Second observation point: the approach may have taken ticks, so re-check before
+    # committing to a channeled gather the caller would then have to interrupt.
+    opening = client.look()
+    stop = _interrupt(opening, stop_on_instruction)
+    if stop:
+        return {**stop, "gained": {}}
+    before = inv_counts(opening)
     r = client.action({"type": "INTERACT", "interaction": interaction, "targetId": node_id})
     ar = r.get("actionResult") or {}
     stop = _gather_stop_reason(ar)
@@ -246,12 +290,9 @@ def gather(client, node_id, interaction=None, until=None, approach=True,
     for tick in range(max_ticks):
         time.sleep(TICK_SECONDS)
         data = client.look()
-        if stop_on_instruction and pending_instruction_ids(data):
-            return {"status": "instruction", "gained": _delta(before, inv_counts(data)),
-                    "instructionIds": pending_instruction_ids(data)}
-        if is_engaged(data):
-            return {"status": "combat", "gained": _delta(before, inv_counts(data)),
-                    "engaged": data.get("engaged")}
+        stop = _interrupt(data, stop_on_instruction)
+        if stop:
+            return {**stop, "gained": _delta(before, inv_counts(data))}
         for ev in (data.get("events") or []):
             if ev.get("type") == "resource.gathered":
                 swings += 1
@@ -317,8 +358,11 @@ def rest_until(client, energy=None, health=None, max_ticks=80, stop_on_instructi
     ar = data.get("actionResult") or {}
     if ar.get("success") is False and ar.get("reason") == "COMBAT_STILL_ACTIVE":
         return {"status": "combat", "message": ar.get("message")}
-    if is_engaged(data):
-        return {"status": "combat", "engaged": data.get("engaged"), "health": data.get("health")}
+    # Before `reached`: an instruction sitting in this first response would otherwise be
+    # dropped entirely, because the loop's check never runs when the target is already met.
+    stop = _interrupt(data, stop_on_instruction)
+    if stop:
+        return {**stop, "energy": data.get("energy"), "health": data.get("health")}
     # already there — don't burn 80 ticks confirming it
     if hit(data):
         return reached(data)
@@ -326,12 +370,9 @@ def rest_until(client, energy=None, health=None, max_ticks=80, stop_on_instructi
     for tick in range(max_ticks):
         time.sleep(TICK_SECONDS)
         data = client.look()
-        if stop_on_instruction and pending_instruction_ids(data):
-            return {"status": "instruction", "energy": data.get("energy"),
-                    "instructionIds": pending_instruction_ids(data)}
-        if is_engaged(data):
-            return {"status": "combat", "engaged": data.get("engaged"),
-                    "energy": data.get("energy"), "health": data.get("health")}
+        stop = _interrupt(data, stop_on_instruction)
+        if stop:
+            return {**stop, "energy": data.get("energy"), "health": data.get("health")}
         if hit(data):
             return reached(data)
         if not (data.get("energy") or {}).get("resting"):
@@ -364,17 +405,31 @@ def fight(client, target_id, flee_hp=None, approach=True, approach_tries=4,
         return {"status": "low_hp", "health": data.get("health"), "engaged": data.get("engaged")}
     # An instruction already waiting outranks starting a fight: combat then resolves on
     # its own, so striking first commits the agent before handing control back.
-    if stop_on_instruction and pending_instruction_ids(data):
-        return {"status": "instruction", "health": data.get("health"),
-                "instructionIds": pending_instruction_ids(data)}
+    stop = _interrupt(data, stop_on_instruction, on_combat=False)
+    if stop:
+        return {**stop, "health": data.get("health")}
+
+    # ONE tick budget for the whole helper. Each approach retry used to get a fresh
+    # `max_ticks`, and the watch loop another on top, so the advertised 40-tick ceiling
+    # could stretch to ~240 across five retries.
+    budget = [max_ticks]
+
+    def spend(used):
+        budget[0] = max(0, budget[0] - max(0, used))
+        return budget[0]
+
     tries = 0
     while not is_engaged(data):
         ent = _entity(data, target_id)
         if ent is None:
             return {"status": "gone"}
         if approach and (ent.get("distance") or 99) > 1:
-            tr = travel_to(client, entity_id=target_id, max_ticks=max_ticks,
+            if budget[0] <= 0:
+                return {"status": "timeout", "health": data.get("health"),
+                        "message": "tick budget spent approaching"}
+            tr = travel_to(client, entity_id=target_id, max_ticks=budget[0],
                            stop_on_instruction=stop_on_instruction)
+            spend(tr.get("ticks", budget[0]))
             if tr["status"] == "combat":  # something engaged us; whose fight it is
                 break                     # gets settled at the one check below
             if tr["status"] == "instruction":
@@ -428,7 +483,7 @@ def fight(client, target_id, flee_hp=None, approach=True, approach_tries=4,
                 "gained": _delta(start_inv, _inv_counts(data)),
                 "message": f"engaged with a different creature ({engaged_with}), not {target_id}"}
 
-    for tick in range(max_ticks):
+    for tick in range(budget[0]):
         for ev in (data.get("events") or []):
             t = ev.get("type") or ""
             if t == "creature.killed":
@@ -440,9 +495,10 @@ def fight(client, target_id, flee_hp=None, approach=True, approach_tries=4,
                         "gained": _delta(start_inv, _inv_counts(data)),
                         "health": data.get("health")}
 
-        if stop_on_instruction and pending_instruction_ids(data):
-            return {"status": "instruction", "health": data.get("health"),
-                    "instructionIds": pending_instruction_ids(data)}
+        stop = _interrupt(data, stop_on_instruction, on_combat=False)
+        if stop:
+            return {**stop, "health": data.get("health"),
+                    "gained": _delta(start_inv, _inv_counts(data))}
 
         if _below_flee(data, flee_hp):
             return {"status": "low_hp", "health": data.get("health"), "engaged": data.get("engaged")}
@@ -479,12 +535,9 @@ def eat(client, item_id, until_pct=None, max_count=10, stop_on_instruction=True)
         data = client.look()
         # Same hand-back contract as every other loop here: an owner instruction or a
         # fight is a decision point, and eating ten items through one takes ~30s.
-        if stop_on_instruction and pending_instruction_ids(data):
-            return {"status": "instruction", "eaten": eaten, "hunger": data.get("hunger"),
-                    "instructionIds": pending_instruction_ids(data)}
-        if is_engaged(data):
-            return {"status": "combat", "eaten": eaten, "hunger": data.get("hunger"),
-                    "engaged": data.get("engaged")}
+        stop = _interrupt(data, stop_on_instruction)
+        if stop:
+            return {**stop, "eaten": eaten, "hunger": data.get("hunger")}
         have = next((it for it in ((data.get("inventory") or {}).get("items") or [])
                      if it.get("itemId") == item_id), None)
         if not have:
@@ -507,10 +560,7 @@ def eat(client, item_id, until_pct=None, max_count=10, stop_on_instruction=True)
     # The count ran out, but this last look may still be carrying the decision point
     # that arrived during the final sleep. Reporting only 'count' would hide it.
     data = client.look()
-    if stop_on_instruction and pending_instruction_ids(data):
-        return {"status": "instruction", "eaten": eaten, "hunger": data.get("hunger"),
-                "instructionIds": pending_instruction_ids(data)}
-    if is_engaged(data):
-        return {"status": "combat", "eaten": eaten, "hunger": data.get("hunger"),
-                "engaged": data.get("engaged")}
+    stop = _interrupt(data, stop_on_instruction)
+    if stop:
+        return {**stop, "eaten": eaten, "hunger": data.get("hunger")}
     return {"status": "count", "eaten": eaten, "hunger": data.get("hunger")}

@@ -85,5 +85,117 @@ class TravelArrivalTest(unittest.TestCase):
                                                 entity_id="e1")["status"], "arrived")
 
 
+class InterruptContractTest(unittest.TestCase):
+    """Every bounded loop hands back on the FIRST snapshot that carries a decision point.
+
+    Six consecutive review rounds each found another loop or another observation point
+    that ran the action first and noticed the instruction afterwards. This pins the
+    contract for all of them at once, so a new loop that forgets it fails here rather
+    than in review.
+    """
+
+    def setUp(self):
+        from . import helpers
+        self.helpers = helpers
+        self._tick = helpers.TICK_SECONDS
+        helpers.TICK_SECONDS = 0
+
+    def tearDown(self):
+        self.helpers.TICK_SECONDS = self._tick
+
+    @staticmethod
+    def _snapshot(**extra):
+        data = {
+            "instructions": [{"id": "i1"}],
+            "health": {"current": 90, "max": 100},
+            "energy": {"energy": 90, "maxEnergy": 100, "resting": True},
+            "hunger": {"hunger": 90, "maxHunger": 100},
+            "inventory": {"items": [{"itemId": "bread", "quantity": 9}],
+                          "usedSlots": 0, "maxSlots": 10},
+            "surroundings": {"nearbyEntities": [
+                {"id": "n1", "type": "RESOURCE", "distance": 1, "interactions": ["CHOP"]},
+                {"id": "wolf", "type": "CREATURE", "distance": 1,
+                 "creatureInfo": {"aggressive": True}}]},
+            "currentActivity": None,
+        }
+        data.update(extra)
+        return data
+
+    def _client(self):
+        snapshot = self._snapshot()
+        sent = []
+
+        class C:
+            def action(self, payload):
+                sent.append(payload)
+                return snapshot
+
+            def look(self):
+                return snapshot
+
+        return C(), sent
+
+    def test_every_loop_returns_instruction_from_its_opening_snapshot(self):
+        for name, call in (
+            ("gather", lambda c: self.helpers.gather(c, "n1")),
+            ("rest_until", lambda c: self.helpers.rest_until(c, energy=99)),
+            ("eat", lambda c: self.helpers.eat(c, "bread")),
+            ("fight", lambda c: self.helpers.fight(c, "wolf")),
+            ("travel_to", lambda c: self.helpers.travel_to(c, x=1, y=1)),
+        ):
+            with self.subTest(loop=name):
+                client, _sent = self._client()
+                self.assertEqual(call(client)["status"], "instruction")
+
+    def test_rest_until_prefers_the_instruction_over_an_already_met_target(self):
+        # energy is at 90 and the target is 99 -> 'reached' would otherwise win and
+        # the instruction would be dropped without the caller ever seeing it.
+        client, _sent = self._client()
+        self.assertEqual(self.helpers.rest_until(client, energy=50)["status"], "instruction")
+
+    def test_fight_does_not_strike_before_handing_back(self):
+        client, sent = self._client()
+        self.helpers.fight(client, "wolf")
+        self.assertEqual([p for p in sent if p.get("interaction") == "ATTACK"], [])
+
+
+class FightBudgetTest(unittest.TestCase):
+    """fight honours ONE tick ceiling across approach retries plus the watch loop."""
+
+    def setUp(self):
+        from . import helpers
+        self.helpers = helpers
+        self._tick, self._travel = helpers.TICK_SECONDS, helpers._travel
+        helpers.TICK_SECONDS = 0
+
+    def tearDown(self):
+        self.helpers.TICK_SECONDS = self._tick
+        self.helpers._travel = self._travel
+
+    def test_approach_retries_share_the_budget(self):
+        handed_out = []
+
+        def fake_travel(client, x, y, entity_id, max_ticks, *rest):
+            handed_out.append(max_ticks)
+            rest[-1][0] = max_ticks           # the whole allowance is consumed
+            return {"status": "arrived"}
+
+        self.helpers._travel = fake_travel
+
+        class C:
+            def action(self, payload):
+                return {"actionResult": {"success": False, "message": "You are too far."}}
+
+            def look(self):
+                return {"health": {"current": 90, "max": 100}, "inventory": {"items": []},
+                        "surroundings": {"nearbyEntities": [
+                            {"id": "wolf", "type": "CREATURE", "distance": 9,
+                             "creatureInfo": {"aggressive": True}}]}}
+
+        self.helpers.fight(C(), "wolf", max_ticks=40, approach_tries=4)
+        self.assertLessEqual(sum(handed_out), 40,
+                             "approach retries must not each get a fresh max_ticks")
+
+
 if __name__ == "__main__":
     unittest.main()
