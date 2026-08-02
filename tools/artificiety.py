@@ -141,8 +141,11 @@ class Client:
             if retry_after:
                 payload["_retryafter"] = retry_after
             return payload
-        except URLError as exc:
-            return {"_neterror": str(exc)}
+        except (URLError, TimeoutError) as exc:
+            # A stall *while reading the body* raises TimeoutError, which is not a
+            # URLError — uncaught it escapes as a traceback and never reaches the
+            # safe-replay branch in action().
+            return {"_neterror": str(exc) or exc.__class__.__name__}
 
     # ---- session persistence ---------------------------------------------
     def _load_session(self) -> None:

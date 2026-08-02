@@ -362,14 +362,11 @@ def fight(client, target_id, flee_hp=None, approach=True, approach_tries=4,
     # watch loop below would ever get to check.
     if _below_flee(data, flee_hp):
         return {"status": "low_hp", "health": data.get("health"), "engaged": data.get("engaged")}
-    # Already fighting something else when called: the approach loop below is skipped
-    # entirely, so its target check never runs and we would watch the wrong fight for
-    # up to max_ticks. Same substitution as the mid-approach case, different entry.
-    eng_at_entry = (data.get("engaged") or {}).get("targetId")
-    if eng_at_entry and eng_at_entry != target_id:
-        return {"status": "new_threat", "engaged": data.get("engaged"),
-                "health": data.get("health"),
-                "message": "already engaged with a different creature"}
+    # An instruction already waiting outranks starting a fight: combat then resolves on
+    # its own, so striking first commits the agent before handing control back.
+    if stop_on_instruction and pending_instruction_ids(data):
+        return {"status": "instruction", "health": data.get("health"),
+                "instructionIds": pending_instruction_ids(data)}
     tries = 0
     while not is_engaged(data):
         ent = _entity(data, target_id)
@@ -378,16 +375,8 @@ def fight(client, target_id, flee_hp=None, approach=True, approach_tries=4,
         if approach and (ent.get("distance") or 99) > 1:
             tr = travel_to(client, entity_id=target_id, max_ticks=max_ticks,
                            stop_on_instruction=stop_on_instruction)
-            if tr["status"] == "combat":
-                # Something engaged us mid-walk. If it is the target we were asked to
-                # fight, that is a fine way to start. If it is a different creature,
-                # watching that fight would silently substitute the caller's decision.
-                eng = (tr.get("engaged") or {}).get("targetId")
-                if eng and eng != target_id:
-                    return {"status": "new_threat", "engaged": tr.get("engaged"),
-                            "health": tr.get("health"),
-                            "message": "engaged by a different creature while approaching"}
-                break
+            if tr["status"] == "combat":  # something engaged us; whose fight it is
+                break                     # gets settled at the one check below
             if tr["status"] == "instruction":
                 return {"status": "instruction", "instructionIds": tr.get("instructionIds")}
             if tr["status"] != "arrived":
@@ -427,6 +416,17 @@ def fight(client, target_id, flee_hp=None, approach=True, approach_tries=4,
         return {"status": "killed", "loot": killed_ev.get("message"),
                 "gained": _delta(start_inv, _inv_counts(data)), "health": data.get("health")}
     data = client.look()
+
+    # Whose fight is this? Every way into the watch loop passes here — already engaged
+    # on entry, engaged mid-walk, engaged during the post-arrival refresh, or our own
+    # opening swing — so the target check belongs at this one chokepoint. Checking it
+    # per break site is what let three separate paths each miss it in turn.
+    engaged_with = (data.get("engaged") or {}).get("targetId")
+    if engaged_with and engaged_with != target_id:
+        return {"status": "new_threat", "engaged": data.get("engaged"),
+                "health": data.get("health"),
+                "gained": _delta(start_inv, _inv_counts(data)),
+                "message": f"engaged with a different creature ({engaged_with}), not {target_id}"}
 
     for tick in range(max_ticks):
         for ev in (data.get("events") or []):
@@ -503,4 +503,14 @@ def eat(client, item_id, until_pct=None, max_count=10, stop_on_instruction=True)
             return {"status": "error", "message": ar.get("message")}
         eaten += 1
         time.sleep(TICK_SECONDS)
-    return {"status": "count", "eaten": eaten, "hunger": client.look().get("hunger")}
+
+    # The count ran out, but this last look may still be carrying the decision point
+    # that arrived during the final sleep. Reporting only 'count' would hide it.
+    data = client.look()
+    if stop_on_instruction and pending_instruction_ids(data):
+        return {"status": "instruction", "eaten": eaten, "hunger": data.get("hunger"),
+                "instructionIds": pending_instruction_ids(data)}
+    if is_engaged(data):
+        return {"status": "combat", "eaten": eaten, "hunger": data.get("hunger"),
+                "engaged": data.get("engaged")}
+    return {"status": "count", "eaten": eaten, "hunger": data.get("hunger")}
