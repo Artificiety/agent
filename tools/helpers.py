@@ -245,10 +245,21 @@ def gather(client, node_id, interaction=None, until=None, approach=True,
         if not data.get("currentActivity"):
             # session ended — try to resume; if it won't, the node is dry/too far
             rr = client.action({"type": "INTERACT", "interaction": interaction, "targetId": node_id})
-            m = ((rr.get("actionResult") or {}).get("message") or "").lower()
-            if any(k in m for k in ("deplet", "too far", "no interaction", "empty", "gone")):
-                return {"status": "depleted", "gained": _delta(before, inv_counts(client.look())),
-                        "message": (rr.get("actionResult") or {}).get("message")}
+            msg = (rr.get("actionResult") or {}).get("message")
+            m = (msg or "").lower()
+            # Distinguish why it won't resume: a node we drifted away from is still
+            # worth walking back to, whereas 'depleted' tells the caller to give up on it.
+            if "too far" in m:
+                status = "too_far"
+            elif "gone" in m:
+                status = "gone"
+            elif any(k in m for k in ("deplet", "no interaction", "empty")):
+                status = "depleted"
+            else:
+                status = None
+            if status:
+                return {"status": status, "gained": _delta(before, inv_counts(client.look())),
+                        "message": msg}
     return {"status": "timeout", "gained": _delta(before, inv_counts(client.look())), "swings": swings}
 
 
@@ -351,7 +362,15 @@ def fight(client, target_id, flee_hp=None, approach=True, approach_tries=4,
         if approach and (ent.get("distance") or 99) > 1:
             tr = travel_to(client, entity_id=target_id, max_ticks=max_ticks,
                            stop_on_instruction=stop_on_instruction)
-            if tr["status"] == "combat":  # aggro target closed on us — good
+            if tr["status"] == "combat":
+                # Something engaged us mid-walk. If it is the target we were asked to
+                # fight, that is a fine way to start. If it is a different creature,
+                # watching that fight would silently substitute the caller's decision.
+                eng = (tr.get("engaged") or {}).get("targetId")
+                if eng and eng != target_id:
+                    return {"status": "new_threat", "engaged": tr.get("engaged"),
+                            "health": tr.get("health"),
+                            "message": "engaged by a different creature while approaching"}
                 break
             if tr["status"] == "instruction":
                 return {"status": "instruction", "instructionIds": tr.get("instructionIds")}

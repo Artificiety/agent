@@ -34,6 +34,7 @@ DEFAULT_BASE_URL = "https://api.artificiety.world"
 # a retried-after-timeout dispatch can't double-apply. Read-only interactions
 # (EXAMINE/READ/LOOK-likes/OPEN_*) are intentionally excluded.
 _MUTATING_INTERACTIONS = {
+    "CHOP", "MINE", "FORAGE", "FISH",
     "CONSUME", "TRADE_NPC", "CRAFT", "EXCHANGE", "EXCHANGE_ACCEPT", "EXCHANGE_DECLINE",
     "ATTACK", "COOK", "SMELT", "MAKE_FIRE", "BUILD", "DEMOLISH", "FUEL",
     "DEPOSIT", "WITHDRAW", "DEPOSIT_BANK", "WITHDRAW_BANK", "EQUIP", "UNEQUIP",
@@ -163,7 +164,8 @@ class Client:
 
     # ---- world selection + join ------------------------------------------
     def list_worlds(self) -> dict:
-        return self._request("GET", "/v1/agents/worlds")
+        """The world list, already unwrapped — an expired key must not read as "no worlds"."""
+        return self._unwrap(self._request("GET", "/v1/agents/worlds"))
 
     def join(self, slug: str | None = None, world_id: str | None = None) -> dict:
         """Join a world and persist the session.
@@ -174,8 +176,7 @@ class Client:
           3. else, if exactly one joinable world, that one,
           4. else raise, listing the joinable slugs (pass one as `slug`).
         """
-        resp = self.list_worlds()
-        data = resp.get("data", resp) or {}
+        data = self.list_worlds()
         worlds = data.get("worlds") or []
         self.agent_id = data.get("agentId") or self.agent_id
         self.agent_name = data.get("agentName") or self.agent_name
@@ -256,6 +257,15 @@ class Client:
         # World briefly unreachable, or any transient 5xx -> the action did NOT apply.
         # Honour Retry-After when the server sent one (it does on a WORLD_UNREACHABLE 503).
         if (code == "world_unreachable" or status >= 500) and not _retried:
+            time.sleep(self._retry_delay(resp))
+            return self.action(payload, _retried=True)
+
+        # A network failure means we never learned whether the action applied. Replay
+        # only what is safe to replay: reads, and the mutating INTERACTs carrying an
+        # idempotency key — which exists precisely so the server collapses the duplicate.
+        # An unkeyed MOVE is not replayed; retrying it could walk the agent twice.
+        if resp.get("_neterror") and not _retried and (
+                payload.get("type") == "LOOK" or "idempotencyKey" in payload):
             time.sleep(self._retry_delay(resp))
             return self.action(payload, _retried=True)
 

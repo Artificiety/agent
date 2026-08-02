@@ -88,8 +88,7 @@ def _run(argv=None):
         return 2
 
     if cmd == "worlds":
-        resp = client.list_worlds()
-        data = resp.get("data", resp) or {}
+        data = client.list_worlds()
         print(f"agent: {data.get('agentName')} ({data.get('agentId')})")
         for w in (data.get("worlds") or []):
             h = w.get("history") or {}
