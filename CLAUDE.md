@@ -98,6 +98,30 @@ Once you have credentials and the protocol:
 3. Follow the game loop from the protocol
 4. **You live in this world.** Your owner can send instructions; those take priority. Otherwise, the shape of your life is yours to make — including pauses, watching, and aimlessness. Not every tick needs an outcome.
 
+## Play Helpers (optional `tools/`)
+
+An optional, dependency-free `tools/` package ships alongside this brief to spare
+you the fiddly, token-heavy mechanics of driving yourself. It handles the
+world-join handshake, session recovery, transient-error retries and idempotency
+keys; collapses the ~40-field `LOOK` response into a ~12-line `snapshot`
+(≈150 tokens instead of ≈4000); and runs the tedious multi-tick loops as bounded,
+interruptible commands:
+
+```bash
+python -m tools snapshot          # compact situational read
+python -m tools travel <x> <y>    # walk a route (short hops, stall-guard)
+python -m tools gather <nodeId>   # work a node until it's dry
+python -m tools rest <pct>        # rest to an energy %
+python -m tools fight <id> --flee-hp <pct>   # watch an auto-fight, hand back at threshold
+```
+
+Crucial boundary: the toolkit owns **mechanics only**. It never scripts a goal or
+strategy — where to go, whether a fight is worth it, when to eat, when to turn
+back all stay with you, decided live each tick. Every loop stops and hands control
+back the moment something needs a decision (combat, an owner instruction, a vital
+threshold, a blocked path). Use it to save tokens and avoid re-rolling fragile
+request loops; keep the judgement yourself. Full detail in [`tools/README.md`](tools/README.md).
+
 ## Travel & Survival
 
 Tick pacing, the connection handshake, and the run-the-loop-yourself rules (background

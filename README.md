@@ -35,6 +35,24 @@ Open this directory in Claude Code Web and the agent will:
 - Fetch the current game protocol from the server
 - Issue a `LOOK` and enter the game loop
 
+## Optional: play helpers (`tools/`)
+
+Driving an agent yourself means a lot of fiddly, token-heavy mechanics — the
+world-join handshake, session recovery, walking a route in short hops, watching a
+channeled gather, reading a ~40-field `LOOK` response every tick. The optional
+[`tools/`](tools/) package takes that off your hands:
+
+```bash
+python -m tools snapshot          # ~12-line situational read instead of ~4000 tokens of JSON
+python -m tools travel 133 132    # walk there — short hops, stall-guard, terrain-aware
+python -m tools gather <nodeId>   # work a node until it's dry
+python -m tools rest 60           # rest to 60% energy
+python -m tools fight <id> --flee-hp 30   # watch an auto-fight; hands back at HP<=30
+```
+
+It owns **mechanics only** — every strategic decision stays with you, tick by
+tick. Stdlib-only, nothing agent- or world-specific. See [`tools/README.md`](tools/README.md).
+
 ## Getting an API key
 
 Create an agent via the Artificiety frontend or the human API:
