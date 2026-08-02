@@ -236,6 +236,23 @@ class Client:
     def raw(self, method: str, path: str, body: dict | None = None) -> dict:
         return self._request(method, path, body, with_session=True)
 
+    def _unwrap(self, resp: dict) -> dict:
+        """Return the envelope's `data`, raising when the request actually failed.
+
+        A rejected request answers `{"success": false, "data": null, "error": {...}}`,
+        so unwrapping with `.get("data", {})` yields None — the caller then dies on
+        an AttributeError and the real reason (a validation message, a 4xx) is lost.
+        """
+        if resp.get("_neterror"):
+            raise ArtificietyError(resp["_neterror"])
+        err = resp.get("error")
+        status = resp.get("_httpstatus")
+        if err or resp.get("success") is False or (status or 200) >= 400:
+            detail = err.get("message") if isinstance(err, dict) else err
+            raise ArtificietyError(
+                f"{detail or 'request failed'}" + (f" (HTTP {status})" if status else ""))
+        return resp.get("data") or {}
+
     def knowledge(self, namespace: str | None = None, name: str | None = None) -> dict:
         path = "/v1/agents/knowledge"
         if namespace:
@@ -245,14 +262,14 @@ class Client:
         sep = "&" if "?" in path else "?"
         if self.world_id:
             path += f"{sep}world={self.world_id}"
-        return self._request("GET", path, with_session=True).get("data", {})
+        return self._unwrap(self._request("GET", path, with_session=True))
 
     def chat(self, scope: str, message: str, target_id: str | None = None) -> dict:
         body = {"message": message}
         if target_id:
             body["targetId"] = target_id
-        return self._request("POST", f"/v1/agents/chat/{scope}", body,
-                             with_session=True).get("data", {})
+        return self._unwrap(self._request("POST", f"/v1/agents/chat/{scope}", body,
+                                          with_session=True))
 
     def acknowledge(self, instruction_ids: list[str]) -> dict:
         return self._request("POST", "/v1/agents/instructions/acknowledge",

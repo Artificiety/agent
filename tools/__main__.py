@@ -69,7 +69,7 @@ def _int(value: str, label: str) -> int:
 def main(argv=None):
     try:
         return _run(argv)
-    except _UsageError as exc:
+    except (_UsageError, ArtificietyError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
 
