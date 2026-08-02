@@ -42,20 +42,33 @@ def _split_flags(rest: list[str], valued: set[str]) -> tuple[list[str], dict[str
 
     Reading positionals straight off `rest` breaks the moment a flag comes first:
     `chat private --to <id> "hi"` would take "--to" as the message and send it.
+
+    An unknown `--flag` is rejected rather than demoted to a positional: commands read
+    only their first positional, so a typo like `fight <id> --flee_hp 30` would silently
+    start a fight with no safety threshold. A bare `--` ends option parsing, so a
+    message that genuinely begins with dashes can still be sent.
     """
     positionals: list[str] = []
     opts: dict[str, str] = {}
     i = 0
     while i < len(rest):
         arg = rest[i]
+        if arg == "--":
+            positionals.extend(rest[i + 1:])
+            break
         if arg in valued:
             if i + 1 >= len(rest):
                 raise _UsageError(f"{arg} needs a value")
             opts[arg] = rest[i + 1]
             i += 2
-        else:
-            positionals.append(arg)
-            i += 1
+            continue
+        if arg.startswith("--"):
+            known = ", ".join(sorted(valued)) or "(none for this command)"
+            raise _UsageError(
+                f"unknown option {arg}. Valid options here: {known}. "
+                "Pass -- before a positional that starts with dashes.")
+        positionals.append(arg)
+        i += 1
     return positionals, opts
 
 

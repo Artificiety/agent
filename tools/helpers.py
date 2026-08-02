@@ -66,6 +66,26 @@ def _walkable_dirs(data: dict) -> list[str]:
     return out
 
 
+def _gather_stop_reason(ar: dict) -> str | None:
+    """Why a gather interaction won't run, as a status the caller can act on.
+
+    Shared by the opening interaction and the mid-session resume so the two cannot
+    classify the same rejection differently — `depleted` means give up on the node,
+    `too_far` means walk back, and anything else names the actual reason instead of
+    being retried every tick until the loop times out.
+    """
+    m = (ar.get("message") or "").lower()
+    if "too far" in m:
+        return "too_far"
+    if "gone" in m:
+        return "gone"
+    if any(k in m for k in ("deplet", "no interaction", "empty")):
+        return "depleted"
+    if ar.get("success") is False:
+        return (ar.get("reason") or "error").lower()
+    return None
+
+
 def _below_flee(data: dict, flee_hp) -> bool:
     """True when HP is at or under the caller's hand-back threshold (percent or absolute)."""
     if flee_hp is None:
@@ -218,11 +238,9 @@ def gather(client, node_id, interaction=None, until=None, approach=True,
     before = inv_counts(client.look())
     r = client.action({"type": "INTERACT", "interaction": interaction, "targetId": node_id})
     ar = r.get("actionResult") or {}
-    if ar.get("success") is False:
-        m = (ar.get("message") or "").lower()
-        if "too far" in m:
-            return {"status": "too_far", "message": ar.get("message")}
-        return {"status": "error", "message": ar.get("message")}
+    stop = _gather_stop_reason(ar)
+    if stop:
+        return {"status": stop, "message": ar.get("message")}
 
     swings = 0
     for tick in range(max_ticks):
@@ -245,21 +263,11 @@ def gather(client, node_id, interaction=None, until=None, approach=True,
         if not data.get("currentActivity"):
             # session ended — try to resume; if it won't, the node is dry/too far
             rr = client.action({"type": "INTERACT", "interaction": interaction, "targetId": node_id})
-            msg = (rr.get("actionResult") or {}).get("message")
-            m = (msg or "").lower()
-            # Distinguish why it won't resume: a node we drifted away from is still
-            # worth walking back to, whereas 'depleted' tells the caller to give up on it.
-            if "too far" in m:
-                status = "too_far"
-            elif "gone" in m:
-                status = "gone"
-            elif any(k in m for k in ("deplet", "no interaction", "empty")):
-                status = "depleted"
-            else:
-                status = None
+            rar = rr.get("actionResult") or {}
+            status = _gather_stop_reason(rar)
             if status:
                 return {"status": status, "gained": _delta(before, inv_counts(client.look())),
-                        "message": msg}
+                        "message": rar.get("message")}
     return {"status": "timeout", "gained": _delta(before, inv_counts(client.look())), "swings": swings}
 
 
@@ -459,15 +467,24 @@ def fight(client, target_id, flee_hp=None, approach=True, approach_tries=4,
     return {"status": "timeout", "health": data.get("health"), "engaged": data.get("engaged")}
 
 
-def eat(client, item_id, until_pct=None, max_count=10):
+def eat(client, item_id, until_pct=None, max_count=10, stop_on_instruction=True):
     """Mechanically CONSUME `item_id` (until a hunger percent, or a count).
 
     WHEN to eat is the player's call; this only does the eating. Stops (status) on:
-    'fed', 'out_of_food', 'not_consumable', 'count', 'already_full'.
+    'fed', 'out_of_food', 'not_consumable', 'count', 'already_full', 'combat',
+    'instruction'.
     """
     eaten = 0
     for _ in range(max_count):
         data = client.look()
+        # Same hand-back contract as every other loop here: an owner instruction or a
+        # fight is a decision point, and eating ten items through one takes ~30s.
+        if stop_on_instruction and pending_instruction_ids(data):
+            return {"status": "instruction", "eaten": eaten, "hunger": data.get("hunger"),
+                    "instructionIds": pending_instruction_ids(data)}
+        if is_engaged(data):
+            return {"status": "combat", "eaten": eaten, "hunger": data.get("hunger"),
+                    "engaged": data.get("engaged")}
         have = next((it for it in ((data.get("inventory") or {}).get("items") or [])
                      if it.get("itemId") == item_id), None)
         if not have:
