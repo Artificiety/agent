@@ -66,6 +66,15 @@ def _walkable_dirs(data: dict) -> list[str]:
     return out
 
 
+def _below_flee(data: dict, flee_hp) -> bool:
+    """True when HP is at or under the caller's hand-back threshold (percent or absolute)."""
+    if flee_hp is None:
+        return False
+    val = (_vitals_pct(data, "health") if flee_hp <= 100
+           else (data.get("health") or {}).get("current", 9999))
+    return val <= flee_hp
+
+
 def _vitals_pct(data: dict, which: str) -> int:
     v = data.get(which) or {}
     key = {"energy": "energy", "hunger": "hunger", "health": "current"}[which]
@@ -142,13 +151,32 @@ def travel_to(client, x=None, y=None, entity_id=None, max_ticks=45,
 
         cur = _pos(data)
         wp = data.get("waypoint")
-        if wp is None:  # navigation ended
-            # for an entity target, "arrived" means adjacent; for coords, on the tile
-            if entity_id is None and hops > 0 and cur != (int(x), int(y)):
-                # finished a hop but not the final target — re-aim at the real target
-                data, reason, msg = issue({"type": "MOVE_TO", "x": int(x), "y": int(y)})
-                continue
-            return {"status": "arrived", "pos": cur}
+        if wp is None:
+            # Navigation ENDED — which is not the same as arrived. The server also
+            # drops the waypoint when a route is cancelled or blocked, so confirm the
+            # destination was actually reached before reporting success: for an entity
+            # target that means adjacent, for coords it means standing on the tile.
+            if entity_id is None:
+                if cur == (int(x), int(y)):
+                    return {"status": "arrived", "pos": cur}
+                short = {"status": "ended_short", "pos": cur,
+                         "tilesAway": max(abs(cur[0] - int(x)), abs(cur[1] - int(y)))
+                         if cur[0] is not None else None}
+            else:
+                node = _entity(data, entity_id)
+                if node is None:
+                    return {"status": "target_lost", "pos": cur}
+                if node.get("distance", 99) <= 1:
+                    return {"status": "arrived", "pos": cur}
+                short = {"status": "ended_short", "pos": cur,
+                         "tilesAway": node.get("distance")}
+            if hops >= max_hops:
+                return short
+            hops += 1
+            _progress(f"  travel: route ended {short['tilesAway']} tiles short, re-aiming [{hops}/{max_hops}]")
+            data, reason, msg = issue(target if entity_id else
+                                      {"type": "MOVE_TO", "x": int(x), "y": int(y)})
+            continue
 
         stall = stall + 1 if cur == last_pos else 0
         last_pos = cur
@@ -243,12 +271,15 @@ def rest_until(client, energy=None, health=None, max_ticks=80, stop_on_instructi
 
     Targets given as <=100 are treated as percent, else absolute. Stops (status)
     on: 'reached', 'full', 'combat', 'instruction', 'timeout'.
-    """
-    r = client.action({"type": "INTERACT", "interaction": "REST"})
-    ar = r.get("actionResult") or {}
-    if ar.get("success") is False and ar.get("reason") == "COMBAT_STILL_ACTIVE":
-        return {"status": "combat", "message": ar.get("message")}
 
+    Combat ends the wait immediately: resting stops the moment something engages the
+    agent, and the caller has to decide whether to fight or run — re-casting REST into
+    an active fight would hold control here while auto-combat plays out.
+
+    On 'reached' the server-side REST may still be running. There is no stop-resting
+    action (any non-LOOK action the caller sends next cancels it), so the result
+    reports `resting` rather than implying it was stopped.
+    """
     def hit(data):
         ok = True
         if energy is not None:
@@ -259,14 +290,31 @@ def rest_until(client, energy=None, health=None, max_ticks=80, stop_on_instructi
             ok = ok and val >= health
         return ok
 
+    def reached(data):
+        return {"status": "reached", "energy": data.get("energy"), "health": data.get("health"),
+                "resting": bool((data.get("energy") or {}).get("resting"))}
+
+    data = client.action({"type": "INTERACT", "interaction": "REST"})
+    ar = data.get("actionResult") or {}
+    if ar.get("success") is False and ar.get("reason") == "COMBAT_STILL_ACTIVE":
+        return {"status": "combat", "message": ar.get("message")}
+    if is_engaged(data):
+        return {"status": "combat", "engaged": data.get("engaged"), "health": data.get("health")}
+    # already there — don't burn 80 ticks confirming it
+    if hit(data):
+        return reached(data)
+
     for tick in range(max_ticks):
         time.sleep(TICK_SECONDS)
         data = client.look()
         if stop_on_instruction and pending_instruction_ids(data):
             return {"status": "instruction", "energy": data.get("energy"),
                     "instructionIds": pending_instruction_ids(data)}
+        if is_engaged(data):
+            return {"status": "combat", "engaged": data.get("engaged"),
+                    "energy": data.get("energy"), "health": data.get("health")}
         if hit(data):
-            return {"status": "reached", "energy": data.get("energy"), "health": data.get("health")}
+            return reached(data)
         if not (data.get("energy") or {}).get("resting"):
             # rest auto-stopped (probably full) — re-cast unless we've hit the cap
             en = data.get("energy") or {}
@@ -290,6 +338,11 @@ def fight(client, target_id, flee_hp=None, approach=True, approach_tries=4,
     """
     data = client.look()
     start_inv = _inv_counts(data)  # to report what dropped, even when the label is combat_ended
+    # Already at the hand-back threshold: opening a fight here is the exact state
+    # `flee_hp` exists to avoid, and the opening swing invites a hit back before the
+    # watch loop below would ever get to check.
+    if _below_flee(data, flee_hp):
+        return {"status": "low_hp", "health": data.get("health"), "engaged": data.get("engaged")}
     tries = 0
     while not is_engaged(data):
         ent = _entity(data, target_id)
@@ -356,11 +409,8 @@ def fight(client, target_id, flee_hp=None, approach=True, approach_tries=4,
             return {"status": "instruction", "health": data.get("health"),
                     "instructionIds": pending_instruction_ids(data)}
 
-        hp = data.get("health") or {}
-        if flee_hp is not None:
-            val = _vitals_pct(data, "health") if flee_hp <= 100 else hp.get("current", 9999)
-            if val <= flee_hp:
-                return {"status": "low_hp", "health": hp, "engaged": data.get("engaged")}
+        if _below_flee(data, flee_hp):
+            return {"status": "low_hp", "health": data.get("health"), "engaged": data.get("engaged")}
 
         # a second aggressive creature adjacent-ish while we're mid-fight = decision point
         eng_id = (data.get("engaged") or {}).get("targetId")

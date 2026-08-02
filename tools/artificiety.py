@@ -49,6 +49,21 @@ class ArtificietyError(RuntimeError):
     """Raised for non-recoverable API failures (bad request, auth, unknown world)."""
 
 
+def _error_code(resp: dict) -> str | None:
+    """The machine-readable code out of an error envelope, whatever its shape.
+
+    The wire form is nested — `{"success": false, "data": null,
+    "error": {"error": "world_unreachable", "message": "..."}}` — so comparing
+    `resp["error"]` against a bare string never matches. The flat form is tolerated
+    too, since not every path in front of this client is the platform API.
+    """
+    err = resp.get("error")
+    if isinstance(err, dict):
+        code = err.get("error")
+        return code if isinstance(code, str) else None
+    return err if isinstance(err, str) else None
+
+
 def load_env(start: Path | None = None) -> None:
     """Load KEY=VALUE lines from the nearest `.env` without overriding real env vars.
 
@@ -121,6 +136,9 @@ class Client:
             except Exception:
                 payload = {"_raw": str(exc)}
             payload["_httpstatus"] = exc.code
+            retry_after = exc.headers.get("Retry-After") if exc.headers else None
+            if retry_after:
+                payload["_retryafter"] = retry_after
             return payload
         except URLError as exc:
             return {"_neterror": str(exc)}
@@ -217,18 +235,45 @@ class Client:
             self.join()
 
         resp = self._request("POST", "/v1/agents/action", payload, with_session=True)
+        code = _error_code(resp)
+        status = resp.get("_httpstatus") or 0
 
-        # session ended -> rejoin once and retry with the SAME payload (same key)
-        if (resp.get("error") == "SESSION_INVALID" or resp.get("_httpstatus") == 409) and not _retried:
-            self.join()
+        # Session ended -> rejoin and retry with the SAME payload (same idempotency key).
+        # Rejoin the world we were already in: join() with no argument re-runs world
+        # selection, which picks a different world whenever the agent may enter more
+        # than one and the "default" is not the one it was playing.
+        if code == "SESSION_INVALID" and not _retried:
+            self.join(world_id=self.world_id) if self.world_id else self.join()
             return self.action(payload, _retried=True)
 
-        # world briefly unreachable -> the action definitely did NOT apply; wait + retry
-        if resp.get("error") == "world_unreachable" and not _retried:
-            time.sleep(3)
+        # Lost a concurrent-join race: our session is gone but a valid one exists.
+        # Re-read it rather than joining again into the same race.
+        if code == "CONCURRENT_SESSION" and not _retried:
+            time.sleep(1)
+            self.join(world_id=self.world_id) if self.world_id else self.join()
             return self.action(payload, _retried=True)
 
-        return resp.get("data", resp)
+        # World briefly unreachable, or any transient 5xx -> the action did NOT apply.
+        # Honour Retry-After when the server sent one (it does on a WORLD_UNREACHABLE 503).
+        if (code == "world_unreachable" or status >= 500) and not _retried:
+            time.sleep(self._retry_delay(resp))
+            return self.action(payload, _retried=True)
+
+        # Unwrap like every other endpoint: `data` is present-and-null on a rejection,
+        # so `.get("data", resp)` would hand back None and every caller would die on
+        # `.get(...)` with the server's actual reason thrown away.
+        return self._unwrap(resp)
+
+    @staticmethod
+    def _retry_delay(resp: dict, default: float = 3.0, cap: float = 30.0) -> float:
+        """Seconds to wait before retrying, from Retry-After when the server sent one."""
+        raw = resp.get("_retryafter")
+        if raw is None:
+            return default
+        try:
+            return max(0.0, min(float(raw), cap))
+        except (TypeError, ValueError):
+            return default
 
     def look(self) -> dict:
         return self.action({"type": "LOOK"})
