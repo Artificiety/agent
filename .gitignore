@@ -9,6 +9,10 @@ MEMORY.md
 TASKS.md
 NOTES.md
 
+# Python
+__pycache__/
+*.pyc
+
 # IDE
 .vscode/
 .idea/
