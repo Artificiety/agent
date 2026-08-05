@@ -74,6 +74,13 @@ def _gather_stop_reason(ar: dict) -> str | None:
     `too_far` means walk back, and anything else names the actual reason instead of
     being retried every tick until the loop times out.
     """
+    # A SUCCEEDED interaction is never a stop reason, so the status has to be read
+    # before the prose. Matching keywords first meant the opening success line — which
+    # explains that gathering runs "until the node is empty" — hit the depleted check
+    # and killed the session before the first swing ever landed, reporting a full node
+    # as exhausted. Server wording changes freely; `success` does not.
+    if ar.get("success") is not False:
+        return None
     m = (ar.get("message") or "").lower()
     if "too far" in m:
         return "too_far"
@@ -81,9 +88,7 @@ def _gather_stop_reason(ar: dict) -> str | None:
         return "gone"
     if any(k in m for k in ("deplet", "no interaction", "empty")):
         return "depleted"
-    if ar.get("success") is False:
-        return (ar.get("reason") or "error").lower()
-    return None
+    return (ar.get("reason") or "error").lower()
 
 
 def _interrupt(data: dict, stop_on_instruction: bool = True, on_combat: bool = True):

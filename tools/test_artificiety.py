@@ -252,3 +252,33 @@ class TravelReaimStallTest(unittest.TestCase):
         self.assertEqual(res["status"], "ended_short")
         self.assertEqual(res["tilesAway"], 1)
         self.assertLessEqual(len(c.actions), 2, f"re-aimed {len(c.actions)}x from one tile")
+
+
+class GatherStopReasonTest(unittest.TestCase):
+    """The interaction's success flag decides; its prose only classifies a failure."""
+
+    def setUp(self):
+        from .helpers import _gather_stop_reason
+        self.reason = _gather_stop_reason
+
+    def test_opening_success_line_is_not_a_stop_reason(self):
+        # the live wording explains the session runs "until the node is empty" —
+        # matching that as depleted aborted every gather before its first swing
+        self.assertIsNone(self.reason({
+            "success": True,
+            "message": ("You begin foraging. It continues on its own — each swing takes a "
+                        "moment and you keep going until the node is empty, your inventory "
+                        "fills, or you move, fight, or start another activity."),
+        }))
+
+    def test_genuine_depletion_still_classifies(self):
+        self.assertEqual(self.reason({
+            "success": False, "message": "This resource is depleted. It will regenerate over time.",
+        }), "depleted")
+
+    def test_too_far_still_classifies(self):
+        self.assertEqual(self.reason({
+            "success": False, "message": "That node is too far away."}), "too_far")
+
+    def test_unlabelled_failure_falls_back_to_its_reason(self):
+        self.assertEqual(self.reason({"success": False, "reason": "LOW_ENERGY"}), "low_energy")
