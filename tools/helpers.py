@@ -134,8 +134,13 @@ def travel_to(client, x=None, y=None, entity_id=None, max_ticks=45,
               max_hops=6, stall_limit=4, hop_tiles=18, stop_on_instruction=True):
     """Walk toward a coordinate or entity, re-pathing in short hops.
 
-    Stops (status) on: 'arrived', 'combat', 'instruction', 'no_path',
-    'low_energy', 'low_satiety', 'target_lost', 'stalled', 'timeout'.
+    Stops (status) on: 'arrived', 'combat', 'instruction', 'no_path', 'out_of_range',
+    'ended_short', 'low_energy', 'low_satiety', 'target_lost', 'stalled', 'timeout'.
+
+    'arrived' means the destination was actually reached — standing on the tile, or
+    adjacent to the entity. When navigation ends anywhere else the status is
+    'ended_short' and `tilesAway` says by how much; 'out_of_range' means even a
+    single-tile hop was refused, which is terrain in the way rather than distance.
 
     The result carries `ticks` — how much of the budget this call actually spent — so a
     caller that walks more than once (fight's approach retries) can hold one ceiling
@@ -166,6 +171,12 @@ def _travel(client, x, y, entity_id, max_ticks, max_hops, stall_limit,
     hops = 0
     last_pos = _pos(data)
     stall = 0
+    # Seeded with the tile the FULL-distance request was just refused from, so the first
+    # hop is already shorter than it. Starting at None instead makes hop #1 recompute the
+    # original destination verbatim and re-ask for the thing that just failed.
+    hop_from = last_pos
+    hop_span = hop_tiles     # how far a hop reaches; shrinks when it buys no ground
+    short_from = None        # tile a re-aim already ended short on
 
     for tick in range(max_ticks):
         used[0] = tick + 1
@@ -177,13 +188,26 @@ def _travel(client, x, y, entity_id, max_ticks, max_hops, stall_limit,
         if reason == "LOW_SATIETY":
             return {"status": "low_satiety", "pos": _pos(data), "message": msg}
         if reason == "OUT_OF_RANGE" and entity_id is None and hops < max_hops:
-            # step the destination closer: a hop of ~hop_tiles toward the target
+            # step the destination closer: a hop of ~hop_span toward the target
             cx, cy = _pos(data)
             if cx is None:
                 return {"status": "no_path", "pos": (cx, cy), "message": msg}
             dx, dy = int(x) - cx, int(y) - cy
             dist = max(abs(dx), abs(dy)) or 1
-            step = min(hop_tiles, dist)
+            # A hop refused from a tile we never left recomputes the SAME destination and
+            # asks again — max_hops identical requests, no movement, budget spent (seen
+            # live while routing around a wall). OUT_OF_RANGE is a pathfinding search-COST
+            # limit, not a distance limit, so the remedy is a SHORTER hop, not a repeat:
+            # halve the span every time it buys no ground, and stop once even one tile is
+            # refused, because that is terrain in the way rather than an exhausted budget.
+            if (cx, cy) == hop_from:
+                hop_span = min(hop_span, dist) // 2
+                if hop_span < 1:
+                    return {"status": "out_of_range", "pos": (cx, cy), "message": msg}
+            else:
+                hop_span = hop_tiles  # we gained ground — a full-length hop is worth trying again
+            hop_from = (cx, cy)
+            step = max(1, min(hop_span, dist))
             hx = cx + round(dx * step / dist)
             hy = cy + round(dy * step / dist)
             hops += 1
@@ -225,8 +249,14 @@ def _travel(client, x, y, entity_id, max_ticks, max_hops, stall_limit,
                     return {"status": "arrived", "pos": cur}
                 short = {"status": "ended_short", "pos": cur,
                          "tilesAway": node.get("distance")}
-            if hops >= max_hops:
+            # Re-aiming is worth one attempt — the world moves, and a route that ended
+            # short can open. Re-aiming from the tile it ALREADY ended short on is not:
+            # the destination is blocked or occupied (an NPC parked on it), so repeating
+            # burns the whole allowance at a tick apiece to learn the same thing. Hand
+            # back the distance and let the caller pick a different tile.
+            if hops >= max_hops or cur == short_from:
                 return short
+            short_from = cur
             hops += 1
             _progress(f"  travel: route ended {short['tilesAway']} tiles short, re-aiming [{hops}/{max_hops}]")
             data, reason, msg = issue(target if entity_id else
