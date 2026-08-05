@@ -199,3 +199,56 @@ class FightBudgetTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TravelHopShrinkTest(unittest.TestCase):
+    """A refused hop must get SHORTER, never be re-asked verbatim from the same tile."""
+
+    def setUp(self):
+        from . import helpers
+        self.helpers = helpers
+        helpers.TICK_SECONDS = 0
+
+    def _blocked_client(self):
+        # never moves, always refuses: a wall between here and the destination
+        return FakeClient([_look(142, 126)],
+                          action_result={"reason": "OUT_OF_RANGE",
+                                         "message": "route there is too complex"})
+
+    def test_hops_shrink_and_never_repeat_a_destination(self):
+        c = self._blocked_client()
+        res = self.helpers.travel_to(c, x=130, y=126, hop_tiles=18, max_hops=6)
+        hops = [(a["x"], a["y"]) for a in c.actions if "x" in a]
+        self.assertEqual(res["status"], "out_of_range")
+        self.assertEqual(len(hops), len(set(hops)), f"repeated identical hops: {hops}")
+        spans = [abs(hx - 142) for hx, _ in hops]
+        self.assertEqual(spans, sorted(spans, reverse=True), f"spans did not shrink: {spans}")
+
+    def test_gives_up_once_even_one_tile_is_refused(self):
+        c = self._blocked_client()
+        self.helpers.travel_to(c, x=130, y=126, hop_tiles=18, max_hops=99)
+        # bails on terrain instead of burning the whole (huge) hop allowance
+        self.assertLess(len(c.actions), 10, f"burned {len(c.actions)} requests on a wall")
+
+    def test_a_hop_that_gains_ground_restores_full_span(self):
+        moved = FakeClient([_look(142, 126), _look(136, 126)],
+                           action_result={"reason": "OUT_OF_RANGE", "message": "too complex"})
+        self.helpers.travel_to(moved, x=130, y=126, hop_tiles=18, max_hops=3)
+        self.assertGreaterEqual(len([a for a in moved.actions if "x" in a]), 2)
+
+
+class TravelReaimStallTest(unittest.TestCase):
+    """Re-aiming from the tile a route already ended short on learns nothing."""
+
+    def setUp(self):
+        from . import helpers
+        self.helpers = helpers
+        helpers.TICK_SECONDS = 0
+
+    def test_reaim_stops_once_it_stops_gaining_ground(self):
+        # waypoint always None, position never changes: destination tile is blocked
+        c = FakeClient([_look(117, 99, waypoint=None)])
+        res = self.helpers.travel_to(c, x=116, y=100, max_hops=6)
+        self.assertEqual(res["status"], "ended_short")
+        self.assertEqual(res["tilesAway"], 1)
+        self.assertLessEqual(len(c.actions), 2, f"re-aimed {len(c.actions)}x from one tile")
