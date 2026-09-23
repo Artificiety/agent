@@ -34,6 +34,16 @@ def pending_instruction_ids(data: dict) -> list[str]:
     return [i.get("id") for i in (data.get("instructions") or []) if i.get("id")]
 
 
+def pending_instructions(data: dict) -> list[dict]:
+    """The pending owner instructions as {id, from, text} — the content, not just the ids,
+    so a loop that hands back on an instruction tells the caller what was asked."""
+    return [{"id": i.get("id"), "from": i.get("from"), "text": i.get("text")}
+            for i in (data.get("instructions") or []) if i.get("id")]
+
+
+ACK_HINT = "read it, then acknowledge: python -m tools ack   (loops hand back until you do)"
+
+
 def is_engaged(data: dict) -> bool:
     return bool(data.get("engaged"))
 
@@ -107,9 +117,10 @@ def _interrupt(data: dict, stop_on_instruction: bool = True, on_combat: bool = T
     being engaged is the normal state rather than an interruption.
     """
     if stop_on_instruction:
-        pending = pending_instruction_ids(data)
+        pending = pending_instructions(data)
         if pending:
-            return {"status": "instruction", "instructionIds": pending}
+            return {"status": "instruction", "instructions": pending,
+                    "instructionIds": [i["id"] for i in pending], "next": ACK_HINT}
     if on_combat and is_engaged(data):
         return {"status": "combat", "engaged": data.get("engaged")}
     return None
@@ -468,7 +479,7 @@ def fight(client, target_id, flee_hp=None, approach=True, approach_tries=4,
             if tr["status"] == "combat":  # something engaged us; whose fight it is
                 break                     # gets settled at the one check below
             if tr["status"] == "instruction":
-                return {"status": "instruction", "instructionIds": tr.get("instructionIds")}
+                return {key: tr[key] for key in ("status", "instructions", "instructionIds", "next") if key in tr}
             if tr["status"] != "arrived":
                 return {"status": "approach_" + tr["status"], "travel": tr}
             data = client.look()

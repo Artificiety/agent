@@ -509,7 +509,9 @@ def format_snapshot(data: dict) -> str:
     instrs = data.get("instructions") or []
     if instrs:
         for i in instrs:
-            lines.append(f"⚑ INSTRUCTION [{i.get('id','?')}]: {i.get('message','')}")
+            sender = f" from {i.get('from')}" if i.get("from") else ""
+            lines.append(f"⚑ INSTRUCTION [{i.get('id','?')}]{sender}: {i.get('text') or ''}")
+        lines.append("  → act on it, then acknowledge: python -m tools ack   (loops hand back until you do)")
     ch = data.get("contextHint")
     if ch:
         lines.append("Hint: " + ch[:280])

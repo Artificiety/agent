@@ -106,7 +106,7 @@ class InterruptContractTest(unittest.TestCase):
     @staticmethod
     def _snapshot(**extra):
         data = {
-            "instructions": [{"id": "i1"}],
+            "instructions": [{"id": "i1", "from": "owner", "text": "Go to the market"}],
             "health": {"current": 90, "max": 100},
             "energy": {"energy": 90, "maxEnergy": 100, "resting": True},
             "hunger": {"hunger": 90, "maxHunger": 100},
@@ -146,6 +146,19 @@ class InterruptContractTest(unittest.TestCase):
             with self.subTest(loop=name):
                 client, _sent = self._client()
                 self.assertEqual(call(client)["status"], "instruction")
+
+    def test_the_hand_back_carries_the_instruction_text_and_how_to_ack(self):
+        for name, call in (
+            ("gather", lambda c: self.helpers.gather(c, "n1")),
+            ("travel_to", lambda c: self.helpers.travel_to(c, x=1, y=1)),
+            ("fight", lambda c: self.helpers.fight(c, "wolf")),
+        ):
+            with self.subTest(loop=name):
+                client, _sent = self._client()
+                out = call(client)
+                self.assertEqual(out["instructions"][0]["text"], "Go to the market")
+                self.assertEqual(out["instructionIds"], ["i1"])
+                self.assertIn("python -m tools ack", out["next"])
 
     def test_rest_until_prefers_the_instruction_over_an_already_met_target(self):
         # energy is at 90 and the target is 99 -> 'reached' would otherwise win and
@@ -310,3 +323,52 @@ class SnapshotPersonalityTest(unittest.TestCase):
     def test_nothing_extra_when_no_flag_is_set(self):
         out = format_snapshot({**self.BASE, "personalityRegenerateRequested": False})
         self.assertNotIn("⚑", out)
+
+
+class SnapshotInstructionTest(unittest.TestCase):
+    """The backend sends instructions as {id, from, text} (world-protocol AgentInstruction)."""
+
+    def test_instruction_text_and_ack_hint_are_shown(self):
+        out = format_snapshot({"surroundings": {}, "instructions": [
+            {"id": "i1", "from": "owner", "text": "Meet me at the fountain"}]})
+        self.assertIn("⚑ INSTRUCTION [i1] from owner: Meet me at the fountain", out)
+        self.assertIn("python -m tools ack", out)
+
+
+class AckCommandTest(unittest.TestCase):
+
+    def _run(self, argv, pending):
+        from . import __main__ as cli
+
+        acked = []
+
+        class FakeClient:
+            def look(self):
+                return {"surroundings": {}, "instructions": [{"id": i, "text": "t"} for i in pending]}
+
+            def acknowledge(self, ids):
+                acked.extend(ids)
+                return {"acknowledged": ids}
+
+            def snapshot_text(self):
+                return "snap"
+
+        original = cli.Client
+        cli.Client = FakeClient
+        try:
+            import contextlib
+            import io
+            with contextlib.redirect_stdout(io.StringIO()):
+                code = cli._run(argv)
+        finally:
+            cli.Client = original
+        return code, acked
+
+    def test_ack_without_ids_acknowledges_every_pending_instruction(self):
+        self.assertEqual(self._run(["ack"], ["i1", "i2"]), (0, ["i1", "i2"]))
+
+    def test_ack_with_ids_acknowledges_just_those(self):
+        self.assertEqual(self._run(["ack", "i2"], ["i1", "i2"]), (0, ["i2"]))
+
+    def test_ack_with_nothing_pending_is_a_no_op(self):
+        self.assertEqual(self._run(["ack"], []), (0, []))

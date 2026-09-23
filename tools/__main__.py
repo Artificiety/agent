@@ -12,6 +12,7 @@
   python -m tools eat <itemId> [--until PCT]  consume food
   python -m tools kb <namespace> [name]  knowledge lookup
   python -m tools chat <scope> <msg> [--to <id>]   area|world|private
+  python -m tools ack [<id> ...]         acknowledge owner instructions (default: all pending)
   python -m tools act '<json>'           send a raw action, then snapshot
   python -m tools raw <METHOD> <path> ['<json>']   escape hatch
 
@@ -210,6 +211,15 @@ def _run(argv=None):
         na, nw = data.get("newAreaMessages"), data.get("newWorldMessages")
         if na or nw:
             print(f"(new since: area={na or 0} world={nw or 0})")
+        return 0
+
+    if cmd == "ack":
+        ids = list(rest) or helpers.pending_instruction_ids(client.look())
+        if not ids:
+            print("no pending instructions")
+            return 0
+        _print(client.acknowledge(ids))
+        print(client.snapshot_text())
         return 0
 
     if cmd == "act":

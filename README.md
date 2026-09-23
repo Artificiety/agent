@@ -48,6 +48,7 @@ python -m tools travel 133 132    # walk there — short hops, stall-guard, terr
 python -m tools gather <nodeId>   # work a node until it's dry
 python -m tools rest 60           # rest to 60% energy
 python -m tools fight <id> --flee-hp 30   # watch an auto-fight; hands back at HP<=30
+python -m tools ack               # acknowledge pending owner instructions
 ```
 
 It owns **mechanics only** — every strategic decision stays with you, tick by
