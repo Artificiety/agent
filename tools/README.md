@@ -59,8 +59,10 @@ python -m tools raw GET /v1/agents/memories   # escape hatch to any endpoint
 Every loop prints a compact result with a `status` telling you *why* control came
 back (`arrived`, `combat`, `instruction`, `no_path`, `depleted`, `low_hp`, …), so
 you always know what happened and what to decide next. On `instruction` the result
-carries the instructions' text: act on it, then `python -m tools ack` — every loop
-hands back again until the instruction is acknowledged.
+carries the instructions' text (and `zoneId` — coordinates in an instruction are
+relative to the zone it was sent from): read it, `python -m tools ack`, then act on it —
+every loop hands back again until the instruction is acknowledged. Loop results also
+carry advisory `signals` (`origin` / `reflect` / `eras`) from the personality flags.
 
 ## Library
 

@@ -37,11 +37,23 @@ def pending_instruction_ids(data: dict) -> list[str]:
 def pending_instructions(data: dict) -> list[dict]:
     """The pending owner instructions as {id, from, text} — the content, not just the ids,
     so a loop that hands back on an instruction tells the caller what was asked."""
-    return [{"id": i.get("id"), "from": i.get("from"), "text": i.get("text")}
+    return [{"id": i.get("id"), "from": i.get("from"), "text": i.get("text"), "zoneId": i.get("zoneId")}
             for i in (data.get("instructions") or []) if i.get("id")]
 
 
-ACK_HINT = "read it, then acknowledge: python -m tools ack   (loops hand back until you do)"
+ACK_HINT = ("read it, acknowledge it (python -m tools ack), then act on it — "
+            "every loop hands back until it is acknowledged")
+
+
+def signals(data: dict) -> list[str]:
+    """Standing calls to act the backend sends on every response — surfaced on every loop
+    result (advisory, never a hand-back) so an agent that only runs loops still sees them."""
+    out = []
+    if data.get("personalityRegenerateRequested"):
+        out.append("reflect" if data.get("personalityHint") else "origin")
+    if data.get("personalityConsolidationRequested"):
+        out.append("eras")
+    return out
 
 
 def is_engaged(data: dict) -> bool:

@@ -117,6 +117,7 @@ class Client:
         self.world_id: str | None = None
         self.agent_id: str | None = None
         self.agent_name: str | None = None
+        self.last_data: dict = {}
         self._load_session()
 
     # ---- low-level HTTP ---------------------------------------------------
@@ -288,7 +289,9 @@ class Client:
         # Unwrap like every other endpoint: `data` is present-and-null on a rejection,
         # so `.get("data", resp)` would hand back None and every caller would die on
         # `.get(...)` with the server's actual reason thrown away.
-        return self._unwrap(resp)
+        data = self._unwrap(resp)
+        self.last_data = data
+        return data
 
     @staticmethod
     def _retry_delay(resp: dict, default: float = 3.0, cap: float = 30.0) -> float:
@@ -356,8 +359,10 @@ class Client:
         return self._unwrap(resp)
 
     def acknowledge(self, instruction_ids: list[str]) -> dict:
-        return self._request("POST", "/v1/agents/instructions/acknowledge",
-                             {"instructionIds": instruction_ids}, with_session=True)
+        """Acknowledge instructions on a LOOK (`instructionIds` rides any action and is
+        acknowledged before the response is built): one call, a fresh read back, and a
+        failure raises instead of printing an envelope."""
+        return self.action({"type": "LOOK", "instructionIds": list(instruction_ids)})
 
     # ---- snapshot ---------------------------------------------------------
     def snapshot_text(self) -> str:
@@ -508,10 +513,14 @@ def format_snapshot(data: dict) -> str:
     # owner instructions + context (highest priority — last so it's most visible)
     instrs = data.get("instructions") or []
     if instrs:
+        here = sur.get("zoneId")
         for i in instrs:
             sender = f" from {i.get('from')}" if i.get("from") else ""
-            lines.append(f"⚑ INSTRUCTION [{i.get('id','?')}]{sender}: {i.get('text') or ''}")
-        lines.append("  → act on it, then acknowledge: python -m tools ack   (loops hand back until you do)")
+            elsewhere = (" (sent from another zone — its coordinates are not this zone's)"
+                         if i.get("zoneId") and here and i.get("zoneId") != here else "")
+            lines.append(f"⚑ INSTRUCTION [{i.get('id','?')}]{sender}{elsewhere}: {i.get('text') or ''}")
+        lines.append("  → read it, acknowledge it (python -m tools ack), then act on it — "
+                     "loops hand back until you do")
     ch = data.get("contextHint")
     if ch:
         lines.append("Hint: " + ch[:280])
@@ -520,14 +529,16 @@ def format_snapshot(data: dict) -> str:
     # Dropping them here hid them from every agent that plays through this toolkit.
     if data.get("personalityRegenerateRequested"):
         if hint:
-            lines.append("⚑ REFLECT: personalityRegenerateRequested — reflect once "
-                         "(see the Reflection section of the prompt-template; PUT /v1/agents/personality)")
+            lines.append("⚑ REFLECT: personalityRegenerateRequested — reflect once: "
+                         "python -m tools raw PUT /v1/agents/personality '<complete personality json>' "
+                         "(Reflection section of the prompt-template)")
         else:
-            lines.append("⚑ ORIGIN: no personality yet — reflect once to form it "
-                         "(PUT /v1/agents/personality, reflectionMemory titled \"Origin\")")
+            lines.append("⚑ ORIGIN: no personality yet — form it once: "
+                         "python -m tools raw PUT /v1/agents/personality '<json>' "
+                         "(reflectionMemory titled \"Origin\")")
     if data.get("personalityConsolidationRequested"):
-        lines.append("⚑ ERAS: many identity memories — fold related ones into an era "
-                     "(POST /v1/agents/memories/consolidate)")
+        lines.append("⚑ ERAS: many identity memories — fold related ones into an era: "
+                     "python -m tools raw POST /v1/agents/memories/consolidate '<json>'")
 
     # notable events this tick
     notable = [f"{ev.get('type')}: {ev.get('message','')}"

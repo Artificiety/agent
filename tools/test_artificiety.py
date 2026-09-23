@@ -332,7 +332,20 @@ class SnapshotInstructionTest(unittest.TestCase):
         out = format_snapshot({"surroundings": {}, "instructions": [
             {"id": "i1", "from": "owner", "text": "Meet me at the fountain"}]})
         self.assertIn("⚑ INSTRUCTION [i1] from owner: Meet me at the fountain", out)
-        self.assertIn("python -m tools ack", out)
+        self.assertIn("read it, acknowledge it (python -m tools ack), then act on it", out)
+
+    def test_an_instruction_from_another_zone_is_flagged(self):
+        out = format_snapshot({"surroundings": {"zoneId": "z-here"}, "instructions": [
+            {"id": "i1", "text": "Meet me at (40,12)", "zoneId": "z-other"}]})
+        self.assertIn("sent from another zone", out)
+        same = format_snapshot({"surroundings": {"zoneId": "z-here"}, "instructions": [
+            {"id": "i1", "text": "Meet me at (40,12)", "zoneId": "z-here"}]})
+        self.assertNotIn("another zone", same)
+
+    def test_context_hint_still_renders_next_to_the_ack_line(self):
+        out = format_snapshot({"surroundings": {}, "contextHint": "You have 1 pending instruction",
+                               "instructions": [{"id": "i1", "text": "t"}]})
+        self.assertIn("Hint: You have 1 pending instruction", out)
 
 
 class AckCommandTest(unittest.TestCase):
@@ -340,35 +353,82 @@ class AckCommandTest(unittest.TestCase):
     def _run(self, argv, pending):
         from . import __main__ as cli
 
-        acked = []
+        sent = []
 
         class FakeClient:
+            last_data = {}
+
             def look(self):
-                return {"surroundings": {}, "instructions": [{"id": i, "text": "t"} for i in pending]}
+                return {"surroundings": {}, "instructions": [{"id": i, "text": f"do {i}"} for i in pending]}
 
             def acknowledge(self, ids):
-                acked.extend(ids)
-                return {"acknowledged": ids}
-
-            def snapshot_text(self):
-                return "snap"
+                sent.append(list(ids))
+                return {"surroundings": {}, "instructions": []}
 
         original = cli.Client
         cli.Client = FakeClient
         try:
             import contextlib
             import io
-            with contextlib.redirect_stdout(io.StringIO()):
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
                 code = cli._run(argv)
         finally:
             cli.Client = original
-        return code, acked
+        return code, sent, out.getvalue()
 
-    def test_ack_without_ids_acknowledges_every_pending_instruction(self):
-        self.assertEqual(self._run(["ack"], ["i1", "i2"]), (0, ["i1", "i2"]))
+    def test_ack_without_ids_acknowledges_and_echoes_every_pending_instruction(self):
+        code, sent, out = self._run(["ack"], ["i1", "i2"])
+        self.assertEqual((code, sent), (0, [["i1", "i2"]]))
+        self.assertIn("acknowledging [i1]: do i1", out)
+        self.assertIn("acknowledged 2", out)
 
     def test_ack_with_ids_acknowledges_just_those(self):
-        self.assertEqual(self._run(["ack", "i2"], ["i1", "i2"]), (0, ["i2"]))
+        self.assertEqual(self._run(["ack", "i2"], ["i1", "i2"])[:2], (0, [["i2"]]))
 
     def test_ack_with_nothing_pending_is_a_no_op(self):
-        self.assertEqual(self._run(["ack"], []), (0, []))
+        self.assertEqual(self._run(["ack"], [])[:2], (0, []))
+
+
+class ClientAcknowledgeTest(unittest.TestCase):
+    """acknowledge rides a LOOK's instructionIds (one call, fresh read) and raises on failure."""
+
+    def _client(self, response):
+        client = Client.__new__(Client)
+        client.session_id, client.world_id, client.last_data = "s", "w", {}
+        calls = []
+        client._request = lambda method, path, body=None, with_session=False: (
+            calls.append((method, path, body)) or response)
+        return client, calls
+
+    def test_acknowledge_sends_instruction_ids_on_a_look(self):
+        client, calls = self._client({"success": True, "data": {"instructions": []}})
+        client.acknowledge(["i1"])
+        self.assertEqual(calls, [("POST", "/v1/agents/action", {"type": "LOOK", "instructionIds": ["i1"]})])
+
+    def test_a_rejected_acknowledge_raises(self):
+        client, _calls = self._client({"success": False, "data": None,
+                                        "error": {"message": "instructionIds contains an invalid UUID."},
+                                        "_httpstatus": 400})
+        with self.assertRaises(ArtificietyError):
+            client.acknowledge(["nope"])
+
+
+class SignalsTest(unittest.TestCase):
+
+    def test_loop_results_carry_the_standing_signals(self):
+        from . import helpers
+        self.assertEqual(helpers.signals({"personalityRegenerateRequested": True}), ["origin"])
+        self.assertEqual(helpers.signals({"personalityRegenerateRequested": True, "personalityHint": "h",
+                                          "personalityConsolidationRequested": True}), ["reflect", "eras"])
+        self.assertEqual(helpers.signals({}), [])
+
+    def test_the_cli_attaches_them_to_a_loop_result(self):
+        from . import __main__ as cli
+
+        class C:
+            last_data = {"personalityRegenerateRequested": True, "personalityHint": ""}
+
+        self.assertEqual(cli._with_signals({"status": "depleted"}, C()), {"status": "depleted", "signals": ["origin"]})
+        self.assertEqual(cli._with_signals({"status": "depleted"}, type("D", (), {"last_data": {}})()),
+                         {"status": "depleted"})

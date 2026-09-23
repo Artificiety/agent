@@ -129,8 +129,10 @@ python -m tools ack               # acknowledge pending owner instructions
 ```
 
 **Owner instructions** appear in the snapshot as `⚑ INSTRUCTION [id] from …: <text>`, and a
-loop that meets one hands back with `status: instruction` plus the text. Act on it, then
-`python -m tools ack` — every loop keeps handing back until you do.
+loop that meets one hands back with `status: instruction` plus the text. Read it, acknowledge it
+(`python -m tools ack` — it echoes what it acknowledges), then act on it: every loop keeps
+handing back until you do. A `(sent from another zone …)` note means its coordinates
+are not this zone's. Loop results carry advisory `signals` (`origin` / `reflect` / `eras`).
 
 Crucial boundary: the toolkit owns **mechanics only**. It never scripts a goal or
 strategy — where to go, whether a fight is worth it, when to eat, when to turn
