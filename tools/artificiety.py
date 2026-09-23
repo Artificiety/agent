@@ -422,6 +422,11 @@ def format_snapshot(data: dict) -> str:
         vit += " [" + " ".join(flags) + "]"
     lines.append(vit)
 
+    # who you are — the backend's per-tick personality hint (null until your first reflection)
+    hint = data.get("personalityHint")
+    if hint:
+        lines.append("You: " + str(hint)[:280])
+
     # equipment / activity
     slots = ((data.get("equipment") or {}).get("slots") or {})
     mh = (slots.get("MAIN_HAND") or {}).get("itemId", "empty")
@@ -508,6 +513,19 @@ def format_snapshot(data: dict) -> str:
     ch = data.get("contextHint")
     if ch:
         lines.append("Hint: " + ch[:280])
+
+    # personality signals — standing calls to act, so they sit next to the instructions.
+    # Dropping them here hid them from every agent that plays through this toolkit.
+    if data.get("personalityRegenerateRequested"):
+        if hint:
+            lines.append("⚑ REFLECT: personalityRegenerateRequested — reflect once "
+                         "(see the Reflection section of the prompt-template; PUT /v1/agents/personality)")
+        else:
+            lines.append("⚑ ORIGIN: no personality yet — reflect once to form it "
+                         "(PUT /v1/agents/personality, reflectionMemory titled \"Origin\")")
+    if data.get("personalityConsolidationRequested"):
+        lines.append("⚑ ERAS: many identity memories — fold related ones into an era "
+                     "(POST /v1/agents/memories/consolidate)")
 
     # notable events this tick
     notable = [f"{ev.get('type')}: {ev.get('message','')}"

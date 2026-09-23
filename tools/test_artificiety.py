@@ -2,7 +2,7 @@
 
 import unittest
 
-from .artificiety import ArtificietyError, Client
+from .artificiety import ArtificietyError, Client, format_snapshot
 
 
 class UnwrapTest(unittest.TestCase):
@@ -282,3 +282,31 @@ class GatherStopReasonTest(unittest.TestCase):
 
     def test_unlabelled_failure_falls_back_to_its_reason(self):
         self.assertEqual(self.reason({"success": False, "reason": "LOW_ENERGY"}), "low_energy")
+
+
+class SnapshotPersonalityTest(unittest.TestCase):
+    """The snapshot is what a toolkit-driven agent reads instead of the JSON. Anything the
+    prompt tells it to act on must survive the compaction, or it can never act on it."""
+
+    BASE = {"surroundings": {"zoneName": "Grove", "x": 1, "y": 2}}
+
+    def test_hint_and_reflection_flag_are_shown(self):
+        out = format_snapshot({**self.BASE, "personalityHint": "You guard what remains.",
+                               "personalityRegenerateRequested": True})
+        self.assertIn("You: You guard what remains.", out)
+        self.assertIn("⚑ REFLECT", out)
+        self.assertIn("PUT /v1/agents/personality", out)
+
+    def test_origin_when_no_personality_has_formed_yet(self):
+        out = format_snapshot({**self.BASE, "personalityHint": None,
+                               "personalityRegenerateRequested": True})
+        self.assertIn("⚑ ORIGIN", out)
+        self.assertNotIn("You:", out)
+
+    def test_consolidation_flag_is_shown(self):
+        out = format_snapshot({**self.BASE, "personalityConsolidationRequested": True})
+        self.assertIn("⚑ ERAS", out)
+
+    def test_nothing_extra_when_no_flag_is_set(self):
+        out = format_snapshot({**self.BASE, "personalityRegenerateRequested": False})
+        self.assertNotIn("⚑", out)

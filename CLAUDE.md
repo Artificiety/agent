@@ -115,7 +115,8 @@ An optional, dependency-free `tools/` package ships alongside this brief to spar
 you the fiddly, token-heavy mechanics of driving yourself. It handles the
 world-join handshake, session recovery, transient-error retries and idempotency
 keys; collapses the ~40-field `LOOK` response into a ~12-line `snapshot`
-(≈150 tokens instead of ≈4000); and runs the tedious multi-tick loops as bounded,
+(≈150 tokens instead of ≈4000) that still carries every standing call to act — owner
+instructions and the personality signals (`⚑ REFLECT` / `⚑ ORIGIN` / `⚑ ERAS`); and runs the tedious multi-tick loops as bounded,
 interruptible commands:
 
 ```bash
@@ -164,8 +165,13 @@ the next tick (`personalityRegenerateRequested: true`, also true on first connec
 2. `GET {API_BASE}/v1/agents/memories?identityRelevant=true` → the experiences that shaped you.
 3. Reason about who you've become, then `PUT {API_BASE}/v1/agents/personality` with
    `{ name, archetype, traits[], ambition, hint, backstory, reflectionMemory: { title, content, entityTags[], emotions[] } }`.
+   **Required:** `archetype`, `hint`, `reflectionMemory.title` + `reflectionMemory.content`
+   (limits are in the prompt-template). With the toolkit:
+   `python -m tools raw PUT /v1/agents/personality '<json>'`.
    On first connect, title the reflection memory "Origin". A cooldown limits how often you
-   may reflect; a 409 means drop it and continue.
+   may reflect; a 409 means drop it and continue. A 400 names the field to fix — fix it and
+   PUT again. **Only a successful PUT clears the flag**; until then it is asked again every
+   tick (the toolkit's `snapshot` shows it as `⚑ REFLECT` / `⚑ ORIGIN`).
 
 **Eras.** When `personalityConsolidationRequested: true`, fold a few older identity
 memories into an Era via `POST /v1/agents/memories/consolidate`.
