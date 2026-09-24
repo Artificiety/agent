@@ -21,9 +21,11 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import tempfile
 import time
 import uuid
+from datetime import datetime
 from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
@@ -335,7 +337,7 @@ class Client:
 
     def take_chat(self) -> list[str]:
         """Chat received since the last call, formatted, oldest first; empties the inbox."""
-        lines = [format_chat_event(ev) for ev in self.chat_inbox]
+        lines = [format_chat_event(ev) for ev in _oldest_first(self.chat_inbox)]
         self.chat_inbox = []
         return lines
 
@@ -411,7 +413,33 @@ _CHAT_LABELS = {"chat.area": "area", "chat.world": "world",
 
 def chat_events(data: dict) -> list[dict]:
     """The chat events (area, world, private, mention) in one response, oldest first."""
-    return [ev for ev in (data.get("events") or []) if ev.get("type") in _CHAT_LABELS]
+    return _oldest_first([ev for ev in (data.get("events") or []) if ev.get("type") in _CHAT_LABELS])
+
+
+def _oldest_first(events: list[dict]) -> list[dict]:
+    """Sorted by `data.sentAt`. A response lists private messages and mentions before area and
+    world chat, so wire order is not time order. Events without a readable `sentAt` keep their
+    order, after the rest."""
+    stamped = [(ev, _sent_at(ev)) for ev in events]
+    return [ev for ev, at in sorted(stamped, key=lambda pair: (pair[1] is None, pair[1] or datetime.min))]
+
+
+def _sent_at(ev: dict) -> datetime | None:
+    """`sentAt` as an aware datetime. Compared as instants, never as strings: the backend prints
+    0 to 9 fractional digits, and '.' sorts before 'Z'."""
+    raw = (ev.get("data") or {}).get("sentAt")
+    if not isinstance(raw, str):
+        return None
+    m = re.fullmatch(r"(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})(?:\.(\d+))?(Z|[+-]\d{2}:\d{2})", raw.strip())
+    if not m:
+        return None
+    # fromisoformat before Python 3.11 takes neither "Z" nor more than 6 fractional digits.
+    fraction = ((m.group(2) or "") + "000000")[:6]
+    offset = "+00:00" if m.group(3) == "Z" else m.group(3)
+    try:
+        return datetime.fromisoformat(f"{m.group(1)}.{fraction}{offset}")
+    except ValueError:
+        return None
 
 
 def format_chat_event(ev: dict) -> str:

@@ -68,6 +68,39 @@ class ChatInboxTest(unittest.TestCase):
         ]))
         self.assertEqual(len(self.client.take_chat()), 2)
 
+    def test_lines_are_oldest_first_across_scopes(self):
+        # A response lists the private message before the older area chat.
+        self.client._unwrap(self._ok([
+            {"type": "chat.private", "message": "[Private from Mira]: meet at the forge",
+             "data": {"sentAt": "2026-09-24T10:00:05Z"}},
+            {"type": "chat.area", "message": "Oren: anyone selling iron?",
+             "data": {"sentAt": "2026-09-24T10:00:01.5Z"}},
+            {"type": "chat.world", "message": "Tess: market at noon",
+             "data": {"sentAt": "2026-09-24T10:00:03.123456789Z"}},
+        ]))
+        self.assertEqual(self.client.take_chat(), [
+            "💬 area> Oren: anyone selling iron?",
+            "💬 world> Tess: market at noon",
+            "💬 private> [Private from Mira]: meet at the forge",
+        ])
+
+    def test_timestamps_compare_as_instants_not_strings(self):
+        # As strings "...:00.500Z" sorts before "...:00Z"; as instants it is half a second later.
+        self.client._unwrap(self._ok([
+            {"type": "chat.area", "message": "Mira: second", "data": {"sentAt": "2026-09-24T10:00:00.500Z"}},
+            {"type": "chat.area", "message": "Oren: first", "data": {"sentAt": "2026-09-24T10:00:00Z"}},
+        ]))
+        self.assertEqual(self.client.take_chat(), ["💬 area> Oren: first", "💬 area> Mira: second"])
+
+    def test_events_without_a_timestamp_keep_their_order_after_the_rest(self):
+        self.client._unwrap(self._ok([
+            {"type": "chat.area", "message": "Mira: undated"},
+            {"type": "chat.area", "message": "Oren: dated", "data": {"sentAt": "2026-09-24T10:00:00Z"}},
+            {"type": "chat.area", "message": "Tess: also undated", "data": {"sentAt": "yesterday"}},
+        ]))
+        self.assertEqual(self.client.take_chat(), [
+            "💬 area> Oren: dated", "💬 area> Mira: undated", "💬 area> Tess: also undated"])
+
 
 class ChatSurfacingTest(unittest.TestCase):
     """Every path that receives chat must show it — snapshot, errors, and nothing twice."""
