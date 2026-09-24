@@ -336,10 +336,14 @@ class Client:
         data = resp.get("data") or {}
         if isinstance(data, dict):
             self.chat_inbox.extend(chat_events(data))
-            # A script that never calls take_chat must not grow the inbox without bound.
-            del self.chat_inbox[: max(0, len(self.chat_inbox) - _CHAT_INBOX_MAX)]
             for scope, n in unshown_counts(data).items():
                 self.chat_unshown[scope] += n
+            # A script that never calls take_chat must not grow the inbox without bound; what is
+            # trimmed was never printed, so it joins the "not shown" count.
+            overflow = max(0, len(self.chat_inbox) - _CHAT_INBOX_MAX)
+            for scope, n in _new_line_counts(self.chat_inbox[:overflow]).items():
+                self.chat_unshown[scope] += n
+            del self.chat_inbox[:overflow]
         return data
 
     def take_chat(self) -> list[str]:
@@ -443,6 +447,14 @@ _CHAT_LABELS = {"chat.area": "area", "chat.world": "world",
 _CHAT_INBOX_MAX = 500
 
 
+def _new_line_counts(events: list[dict]) -> dict[str, int]:
+    """New (not earlier) chat lines per scope among ``events``."""
+    def count(event_type: str) -> int:
+        return sum(1 for ev in events
+                   if ev.get("type") == event_type and not (ev.get("data") or {}).get("earlier"))
+    return {"area": count("chat.area"), "world": count("chat.world"), "private": count("chat.private")}
+
+
 def unshown_counts(data: dict) -> dict[str, int]:
     """New messages per scope that arrived without their text: the response's count minus the new
     lines it carried (a board's earlier lines are not new)."""
@@ -490,20 +502,24 @@ def _sent_at(ev: dict) -> datetime | None:
         return None
 
 
-def format_history_page(page: dict) -> list[str]:
-    """A chat-history page as lines, oldest first, ending with how to read further back."""
+def format_history_page(page: dict, own_id: str | None = None) -> list[str]:
+    """A chat-history page as lines, oldest first, ending with how to read further back. Your own
+    lines read "You" (with no reply id); on them HUMAN means your owner typed it in your name."""
     lines = []
     for m in page.get("messages") or []:
-        human = " (human)" if m.get("authorType") == "HUMAN" else ""
         sender = m.get("senderId")
-        lines.append(f"{m.get('sentAt')} {m.get('senderName')}{human}: {m.get('content')}"
-                     + (f"  [from {sender}]" if sender else ""))
+        own = own_id is not None and sender == own_id
+        human = ((" (typed by your owner)" if own else " (human)")
+                 if m.get("authorType") == "HUMAN" else "")
+        name = "You" if own else (m.get("senderName") or "?")
+        lines.append(f"{m.get('sentAt') or '?'} {name}{human}: {m.get('content')}"
+                     + (f"  [from {sender}]" if sender and not own else ""))
     if not lines:
         return ["No messages."]
     if page.get("hasMore") and page.get("nextBefore"):
         lines.append(f"(older: --before {page['nextBefore']})")
     else:
-        lines.append("(start of the conversation)")
+        lines.append("(no older messages)")
     return lines
 
 
