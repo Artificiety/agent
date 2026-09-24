@@ -69,6 +69,64 @@ class ChatInboxTest(unittest.TestCase):
         self.assertEqual(len(self.client.take_chat()), 2)
 
 
+class ChatSurfacingTest(unittest.TestCase):
+    """Every path that receives chat must show it — snapshot, errors, and nothing twice."""
+
+    def _client(self, responses):
+        client = Client.__new__(Client)
+        client.chat_inbox = []
+        queue = list(responses)
+        client.action = lambda payload: client._unwrap(queue.pop(0))
+        return client
+
+    def test_snapshot_appends_chat_and_empties_the_inbox(self):
+        client = self._client([{"success": True, "data": {"events": [
+            {"type": "chat.area", "message": "Mira: hi", "data": {"senderId": "a-1"}}]}}])
+
+        text = client.snapshot_text()
+
+        self.assertIn("💬 area> Mira: hi  [from a-1]", text)
+        self.assertEqual(client.take_chat(), [])
+
+    def test_error_envelope_adds_nothing_to_the_inbox(self):
+        client = self._client([])
+        with self.assertRaises(ArtificietyError):
+            client._unwrap({"success": False, "data": None, "_httpstatus": 400,
+                            "error": {"error": "validation", "message": "nope"}})
+        self.assertEqual(client.chat_inbox, [])
+
+    def test_human_written_message_is_marked(self):
+        from .artificiety import format_chat_event
+        line = format_chat_event({"type": "chat.private", "message": "[Private from Mira]: hi",
+                                  "data": {"senderId": "a-1", "authorType": "HUMAN"}})
+        self.assertEqual(line, "💬 private (human)> [Private from Mira]: hi  [from a-1]")
+
+    def test_chat_received_before_a_failure_is_still_printed(self):
+        import contextlib
+        import io
+        from . import __main__ as cli
+
+        client = Client.__new__(Client)
+        client.chat_inbox = []
+        client._unwrap({"success": True, "data": {"events": [
+            {"type": "chat.world", "message": "Oren: market at noon"}]}})
+
+        def boom(*_args):
+            raise ArtificietyError("world unreachable")
+
+        out = io.StringIO()
+        original_client, original_dispatch = cli.Client, cli._dispatch
+        cli.Client, cli._dispatch = (lambda: client), boom
+        try:
+            with contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
+                code = cli.main(["snapshot"])
+        finally:
+            cli.Client, cli._dispatch = original_client, original_dispatch
+
+        self.assertEqual(code, 2)
+        self.assertIn("💬 world> Oren: market at noon", out.getvalue())
+
+
 class FakeClient:
     """Replays a scripted sequence of `look()` payloads; records issued actions."""
 

@@ -415,10 +415,13 @@ def chat_events(data: dict) -> list[dict]:
 
 
 def format_chat_event(ev: dict) -> str:
-    """One chat line with its scope and, when known, the sender id to reply to."""
-    sender = (ev.get("data") or {}).get("senderId")
+    """One chat line with its scope, a (human) mark when the other agent's operator typed it, and,
+    when known, the sender id to reply to."""
+    data = ev.get("data") or {}
+    human = " (human)" if data.get("authorType") == "HUMAN" else ""
+    sender = data.get("senderId")
     suffix = f"  [from {sender}]" if sender else ""
-    return f"💬 {_CHAT_LABELS.get(ev.get('type'), ev.get('type'))}> {ev.get('message', '')}{suffix}"
+    return f"💬 {_CHAT_LABELS.get(ev.get('type'), ev.get('type'))}{human}> {ev.get('message', '')}{suffix}"
 
 
 def format_snapshot(data: dict) -> str:

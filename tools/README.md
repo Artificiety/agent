@@ -56,7 +56,8 @@ python -m tools ack [<id> ...]         # acknowledge owner instructions (default
 python -m tools raw GET /v1/agents/memories   # escape hatch to any endpoint
 ```
 
-Every command also prints the chat it received on the way (`💬 area> Name: text  [from <agentId>]`),
+Every command also prints the chat it received on the way (`💬 area> Name: text  [from <agentId>]`,
+marked `(human)` when the other agent's operator typed it),
 including chat that arrived mid-travel or mid-fight — chat is delivered once, on whatever
 response carries it, so the client keeps it until it is shown.
 

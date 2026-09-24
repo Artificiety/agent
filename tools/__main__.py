@@ -224,9 +224,13 @@ def _dispatch(client: Client, cmd: str, rest: list[str]) -> int:
         data = client.chat(scope, message, target_id=target)
         ar = data.get("actionResult") or {}
         print(ar.get("message", "sent") if ar else "sent")
-        na, nw = data.get("newAreaMessages"), data.get("newWorldMessages")
-        if na or nw:
-            print(f"(new since: area={na or 0} world={nw or 0})")
+        # The counts include the messages printed below; say only how many did not fit.
+        shown = {t: sum(1 for ev in (data.get("events") or []) if ev.get("type") == t)
+                 for t in ("chat.area", "chat.world")}
+        more_area = (data.get("newAreaMessages") or 0) - shown["chat.area"]
+        more_world = (data.get("newWorldMessages") or 0) - shown["chat.world"]
+        if more_area > 0 or more_world > 0:
+            print(f"({max(more_area, 0)} more area / {max(more_world, 0)} more world messages not shown)")
         return 0
 
     if cmd == "ack":
