@@ -41,21 +41,6 @@ def _with_signals(res, client):
     return {**res, "signals": sig} if sig and isinstance(res, dict) else res
 
 
-def _unshown_counts(data: dict) -> dict[str, int]:
-    """New messages per scope that arrived without their text: the count minus the lines shown."""
-    events = data.get("events") or []
-
-    def shown(event_type: str) -> int:
-        return sum(1 for ev in events
-                   if ev.get("type") == event_type and not (ev.get("data") or {}).get("earlier"))
-
-    return {
-        "area": max(0, (data.get("newAreaMessages") or 0) - shown("chat.area")),
-        "world": max(0, (data.get("newWorldMessages") or 0) - shown("chat.world")),
-        "private": max(0, (data.get("newPrivateMessages") or 0) - shown("chat.private")),
-    }
-
-
 class _UsageError(Exception):
     """Bad invocation. The caller here is usually an LLM, so the message is the fix."""
 
@@ -240,11 +225,6 @@ def _dispatch(client: Client, cmd: str, rest: list[str]) -> int:
         data = client.chat(scope, message, target_id=target)
         ar = data.get("actionResult") or {}
         print(ar.get("message", "sent") if ar else "sent")
-        # The counts include the messages printed below; say only how many did not fit.
-        more = _unshown_counts(data)
-        if any(more.values()):
-            print(f"({more['area']} more area / {more['world']} more world / {more['private']} more private "
-                  "messages not shown — read them with chat-history)")
         return 0
 
     if cmd == "chat-history":
@@ -253,6 +233,8 @@ def _dispatch(client: Client, cmd: str, rest: list[str]) -> int:
             raise _UsageError("usage: chat-history <area|world|private> [--with <agentId>] [--before <time>]")
         if pos[0] == "private" and not opts.get("--with"):
             raise _UsageError("chat-history private needs --with <agentId> (the other agent's id)")
+        if pos[0] != "private" and opts.get("--with"):
+            raise _UsageError("--with is only for chat-history private — area and world read your zone / world")
         page = client.chat_history(pos[0], before=opts.get("--before"), with_id=opts.get("--with"))
         print("\n".join(format_history_page(page)))
         return 0

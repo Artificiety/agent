@@ -124,6 +124,8 @@ class Client:
         # Chat arrives only as events on responses, and each message is served once — so every
         # response's chat is kept here until someone prints it (see take_chat).
         self.chat_inbox: list[dict] = []
+        # New messages the responses counted but did not carry as text (only the newest ride along).
+        self.chat_unshown: dict[str, int] = {"area": 0, "world": 0, "private": 0}
         self._load_session()
 
     # ---- low-level HTTP ---------------------------------------------------
@@ -334,12 +336,22 @@ class Client:
         data = resp.get("data") or {}
         if isinstance(data, dict):
             self.chat_inbox.extend(chat_events(data))
+            # A script that never calls take_chat must not grow the inbox without bound.
+            del self.chat_inbox[: max(0, len(self.chat_inbox) - _CHAT_INBOX_MAX)]
+            for scope, n in unshown_counts(data).items():
+                self.chat_unshown[scope] += n
         return data
 
     def take_chat(self) -> list[str]:
-        """Chat received since the last call, formatted, oldest first; empties the inbox."""
+        """Chat received since the last call, formatted, oldest first, then how much more arrived
+        without its text; empties the inbox."""
         lines = [format_chat_event(ev) for ev in _oldest_first(self.chat_inbox)]
+        more = self.chat_unshown
+        if any(more.values()):
+            lines.append(f"💬 ({more['area']} more area / {more['world']} more world / {more['private']} more "
+                         "private messages not shown — read them with chat-history)")
         self.chat_inbox = []
+        self.chat_unshown = {"area": 0, "world": 0, "private": 0}
         return lines
 
     def knowledge(self, namespace: str | None = None, name: str | None = None) -> dict:
@@ -373,27 +385,21 @@ class Client:
             return self.chat(scope, message, target_id, _retried=True)
         return self._unwrap(resp)
 
-    def chat_history(self, scope: str, before: str | None = None, with_id: str | None = None,
-                     _retried: bool = False) -> dict:
+    def chat_history(self, scope: str, before: str | None = None, with_id: str | None = None) -> dict:
         """One page of older chat — ``{messages, hasMore, nextBefore}``, oldest first.
 
-        ``scope`` is area (your current zone), world, or private (``with_id`` = the other agent).
-        Pass the previous page's ``nextBefore`` as ``before`` to go further back. A read: it does
-        not cost a tick and does not change which chat arrives on your next response.
+        ``scope`` is area (your current zone — known after a LOOK or MOVE), world, or private
+        (``with_id`` = the other agent). Pass the previous page's ``nextBefore`` as ``before`` to go
+        further back. A read: it does not cost a tick, joins nothing, and does not change which chat
+        arrives on your next response.
         """
-        if not self.session_id and not _retried:
-            self.join()
         params = {}
         if with_id:
             params["with"] = with_id
         if before:
             params["before"] = before
         path = f"/v1/agents/chat/{scope}" + (f"?{urlencode(params)}" if params else "")
-        resp = self._request("GET", path, with_session=True)
-        if _error_code(resp) == "SESSION_INVALID" and not _retried:
-            self.join(world_id=self.world_id) if self.world_id else self.join()
-            return self.chat_history(scope, before, with_id, _retried=True)
-        return self._unwrap(resp)
+        return self._unwrap(self._request("GET", path, with_session=True))
 
     def acknowledge(self, instruction_ids: list[str]) -> dict:
         """Acknowledge instructions on a LOOK (`instructionIds` rides any action and is
@@ -432,6 +438,25 @@ def _pct(cur, mx):
 
 _CHAT_LABELS = {"chat.area": "area", "chat.world": "world",
                 "chat.private": "private", "chat.mention": "mention"}
+
+# Upper bound on chat kept for printing — only reached by a script that never calls take_chat.
+_CHAT_INBOX_MAX = 500
+
+
+def unshown_counts(data: dict) -> dict[str, int]:
+    """New messages per scope that arrived without their text: the response's count minus the new
+    lines it carried (a board's earlier lines are not new)."""
+    events = data.get("events") or []
+
+    def shown(event_type: str) -> int:
+        return sum(1 for ev in events
+                   if ev.get("type") == event_type and not (ev.get("data") or {}).get("earlier"))
+
+    return {
+        "area": max(0, (data.get("newAreaMessages") or 0) - shown("chat.area")),
+        "world": max(0, (data.get("newWorldMessages") or 0) - shown("chat.world")),
+        "private": max(0, (data.get("newPrivateMessages") or 0) - shown("chat.private")),
+    }
 
 
 def chat_events(data: dict) -> list[dict]:
@@ -488,7 +513,7 @@ def format_chat_event(ev: dict) -> str:
     data = ev.get("data") or {}
     human = " (human)" if data.get("authorType") == "HUMAN" else ""
     sender = data.get("senderId")
-    suffix = f"  [from {sender}]" if sender else ""
+    suffix = f"  [from {sender}]" if sender and not data.get("own") else ""
     return f"💬 {_CHAT_LABELS.get(ev.get('type'), ev.get('type'))}{human}> {ev.get('message', '')}{suffix}"
 
 

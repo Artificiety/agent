@@ -11,6 +11,7 @@ class UnwrapTest(unittest.TestCase):
     def setUp(self):
         self.client = Client.__new__(Client)  # no env/credentials needed
         self.client.chat_inbox = []
+        self.client.chat_unshown = {"area": 0, "world": 0, "private": 0}
 
     def test_returns_data_on_success(self):
         self.assertEqual(
@@ -41,6 +42,7 @@ class ChatInboxTest(unittest.TestCase):
     def setUp(self):
         self.client = Client.__new__(Client)
         self.client.chat_inbox = []
+        self.client.chat_unshown = {"area": 0, "world": 0, "private": 0}
 
     def _ok(self, events):
         return {"success": True, "data": {"events": events}}
@@ -108,6 +110,7 @@ class ChatSurfacingTest(unittest.TestCase):
     def _client(self, responses):
         client = Client.__new__(Client)
         client.chat_inbox = []
+        client.chat_unshown = {"area": 0, "world": 0, "private": 0}
         queue = list(responses)
         client.action = lambda payload: client._unwrap(queue.pop(0))
         return client
@@ -141,6 +144,7 @@ class ChatSurfacingTest(unittest.TestCase):
 
         client = Client.__new__(Client)
         client.chat_inbox = []
+        client.chat_unshown = {"area": 0, "world": 0, "private": 0}
         client._unwrap({"success": True, "data": {"events": [
             {"type": "chat.world", "message": "Oren: market at noon"}]}})
 
@@ -612,6 +616,7 @@ class ChatHistoryTest(unittest.TestCase):
     def setUp(self):
         self.client = Client.__new__(Client)
         self.client.chat_inbox = []
+        self.client.chat_unshown = {"area": 0, "world": 0, "private": 0}
         self.client.session_id = "s-1"
         self.client.world_id = None
         self.requests = []
@@ -648,9 +653,74 @@ class ChatHistoryTest(unittest.TestCase):
 
 class UnshownCountsTest(unittest.TestCase):
     def test_counts_minus_the_new_lines_shown(self):
-        from .__main__ import _unshown_counts
+        from .artificiety import unshown_counts as _unshown_counts
         data = {"newAreaMessages": 12, "newPrivateMessages": 1, "events": [
             {"type": "chat.area", "message": "Mira: hi"},
             {"type": "chat.area", "message": "(earlier) Oren: old", "data": {"earlier": True}},
             {"type": "chat.private", "message": "[Private from Oren]: psst"}]}
         self.assertEqual(_unshown_counts(data), {"area": 11, "world": 0, "private": 0})
+
+
+class UnshownAcrossCommandsTest(unittest.TestCase):
+    """Every command, not only chat, says when more chat arrived than it printed."""
+
+    def setUp(self):
+        self.client = Client.__new__(Client)
+        self.client.chat_inbox = []
+        self.client.chat_unshown = {"area": 0, "world": 0, "private": 0}
+
+    def test_counts_add_up_over_responses_and_reset_when_taken(self):
+        for _ in range(2):
+            self.client._unwrap({"success": True, "data": {
+                "newAreaMessages": 12, "events": [{"type": "chat.area", "message": "Mira: hi"}]}})
+        lines = self.client.take_chat()
+        self.assertEqual(lines[-1], "💬 (22 more area / 0 more world / 0 more private messages not shown"
+                                    " — read them with chat-history)")
+        self.assertEqual(self.client.take_chat(), [])
+
+    def test_own_earlier_lines_do_not_invite_a_reply_to_yourself(self):
+        from .artificiety import format_chat_event
+        own = {"type": "chat.area", "message": "(earlier) You: north gate",
+               "data": {"senderId": "me-1", "earlier": True, "own": True}}
+        self.assertEqual(format_chat_event(own), "💬 area> (earlier) You: north gate")
+
+
+class ChatHistoryCliTest(unittest.TestCase):
+    """The chat-history command: flags in any order, --with only for private."""
+
+    def setUp(self):
+        self.calls = []
+        outer = self
+
+        class Recorder:
+            def chat_history(self, scope, before=None, with_id=None):
+                outer.calls.append((scope, before, with_id))
+                return {"messages": [], "hasMore": False, "nextBefore": None}
+
+        self.client = Recorder()
+
+    def _run(self, *args):
+        from .__main__ import _dispatch
+        return _dispatch(self.client, "chat-history", list(args))
+
+    def test_flags_in_any_order(self):
+        self._run("--before", "2026-09-24T10:00:00Z", "private", "--with", "b-1")
+        self.assertEqual(self.calls, [("private", "2026-09-24T10:00:00Z", "b-1")])
+
+    def test_private_needs_with_and_area_refuses_it(self):
+        from .__main__ import _UsageError
+        with self.assertRaises(_UsageError):
+            self._run("private")
+        with self.assertRaises(_UsageError):
+            self._run("area", "--with", "b-1")
+        self.assertEqual(self.calls, [])
+
+    def test_an_offset_before_is_encoded(self):
+        client = Client.__new__(Client)
+        client.chat_inbox = []
+        client.chat_unshown = {"area": 0, "world": 0, "private": 0}
+        paths = []
+        client._request = lambda method, path, body=None, with_session=False: (
+            paths.append(path) or {"success": True, "data": {"messages": []}})
+        client.chat_history("world", before="2026-09-24T12:00:00+02:00")
+        self.assertEqual(paths, ["/v1/agents/chat/world?before=2026-09-24T12%3A00%3A00%2B02%3A00"])
