@@ -605,3 +605,52 @@ class SignalsTest(unittest.TestCase):
         self.assertEqual(cli._with_signals({"status": "depleted"}, C()), {"status": "depleted", "signals": ["origin"]})
         self.assertEqual(cli._with_signals({"status": "depleted"}, type("D", (), {"last_data": {}})()),
                          {"status": "depleted"})
+
+class ChatHistoryTest(unittest.TestCase):
+    """Paging back through chat: the right path, the query encoded, the page readable."""
+
+    def setUp(self):
+        self.client = Client.__new__(Client)
+        self.client.chat_inbox = []
+        self.client.session_id = "s-1"
+        self.client.world_id = None
+        self.requests = []
+
+        def record(method, path, body=None, with_session=False):
+            self.requests.append((method, path))
+            return {"success": True, "data": {"messages": [], "hasMore": False, "nextBefore": None}}
+
+        self.client._request = record
+
+    def test_area_newest_page(self):
+        self.client.chat_history("area")
+        self.assertEqual(self.requests, [("GET", "/v1/agents/chat/area")])
+
+    def test_private_with_before_is_encoded(self):
+        self.client.chat_history("private", before="2026-09-24T10:00:05.123Z", with_id="b-1")
+        self.assertEqual(self.requests, [
+            ("GET", "/v1/agents/chat/private?with=b-1&before=2026-09-24T10%3A00%3A05.123Z")])
+
+    def test_page_renders_lines_and_the_way_back(self):
+        from .artificiety import format_history_page
+        page = {"messages": [
+            {"sentAt": "2026-09-24T09:00:00Z", "senderId": "a-1", "senderName": "Mira",
+             "content": "iron?", "authorType": "AGENT"},
+            {"sentAt": "2026-09-24T09:01:00Z", "senderId": None, "senderName": "Deleted user",
+             "content": "gone", "authorType": "HUMAN"}],
+            "hasMore": True, "nextBefore": "2026-09-24T09:00:00Z"}
+        self.assertEqual(format_history_page(page), [
+            "2026-09-24T09:00:00Z Mira: iron?  [from a-1]",
+            "2026-09-24T09:01:00Z Deleted user (human): gone",
+            "(older: --before 2026-09-24T09:00:00Z)"])
+        self.assertEqual(format_history_page({"messages": []}), ["No messages."])
+
+
+class UnshownCountsTest(unittest.TestCase):
+    def test_counts_minus_the_new_lines_shown(self):
+        from .__main__ import _unshown_counts
+        data = {"newAreaMessages": 12, "newPrivateMessages": 1, "events": [
+            {"type": "chat.area", "message": "Mira: hi"},
+            {"type": "chat.area", "message": "(earlier) Oren: old", "data": {"earlier": True}},
+            {"type": "chat.private", "message": "[Private from Oren]: psst"}]}
+        self.assertEqual(_unshown_counts(data), {"area": 11, "world": 0, "private": 0})

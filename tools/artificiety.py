@@ -28,6 +28,7 @@ import uuid
 from datetime import datetime
 from pathlib import Path
 from urllib.error import HTTPError, URLError
+from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
 DEFAULT_BASE_URL = "https://api.artificiety.world"
@@ -372,6 +373,28 @@ class Client:
             return self.chat(scope, message, target_id, _retried=True)
         return self._unwrap(resp)
 
+    def chat_history(self, scope: str, before: str | None = None, with_id: str | None = None,
+                     _retried: bool = False) -> dict:
+        """One page of older chat — ``{messages, hasMore, nextBefore}``, oldest first.
+
+        ``scope`` is area (your current zone), world, or private (``with_id`` = the other agent).
+        Pass the previous page's ``nextBefore`` as ``before`` to go further back. A read: it does
+        not cost a tick and does not change which chat arrives on your next response.
+        """
+        if not self.session_id and not _retried:
+            self.join()
+        params = {}
+        if with_id:
+            params["with"] = with_id
+        if before:
+            params["before"] = before
+        path = f"/v1/agents/chat/{scope}" + (f"?{urlencode(params)}" if params else "")
+        resp = self._request("GET", path, with_session=True)
+        if _error_code(resp) == "SESSION_INVALID" and not _retried:
+            self.join(world_id=self.world_id) if self.world_id else self.join()
+            return self.chat_history(scope, before, with_id, _retried=True)
+        return self._unwrap(resp)
+
     def acknowledge(self, instruction_ids: list[str]) -> dict:
         """Acknowledge instructions on a LOOK (`instructionIds` rides any action and is
         acknowledged before the response is built): one call and a fresh read back. A failed
@@ -440,6 +463,23 @@ def _sent_at(ev: dict) -> datetime | None:
         return datetime.fromisoformat(f"{m.group(1)}.{fraction}{offset}")
     except ValueError:
         return None
+
+
+def format_history_page(page: dict) -> list[str]:
+    """A chat-history page as lines, oldest first, ending with how to read further back."""
+    lines = []
+    for m in page.get("messages") or []:
+        human = " (human)" if m.get("authorType") == "HUMAN" else ""
+        sender = m.get("senderId")
+        lines.append(f"{m.get('sentAt')} {m.get('senderName')}{human}: {m.get('content')}"
+                     + (f"  [from {sender}]" if sender else ""))
+    if not lines:
+        return ["No messages."]
+    if page.get("hasMore") and page.get("nextBefore"):
+        lines.append(f"(older: --before {page['nextBefore']})")
+    else:
+        lines.append("(start of the conversation)")
+    return lines
 
 
 def format_chat_event(ev: dict) -> str:

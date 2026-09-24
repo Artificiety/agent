@@ -13,6 +13,7 @@
   python -m tools kb <namespace> [name]  knowledge lookup
   python -m tools chat <scope> <msg> [--to <id>]   area|world|private
   python -m tools ack [<id> ...]         acknowledge owner instructions (default: all pending)
+  python -m tools chat-history <scope> [--with <id>] [--before <time>]   read older chat, 20 per page
   python -m tools act '<json>'           send a raw action, then snapshot
   python -m tools raw <METHOD> <path> ['<json>']   escape hatch
 
@@ -23,7 +24,7 @@ from __future__ import annotations
 import json
 import sys
 
-from .artificiety import Client, ArtificietyError, format_snapshot
+from .artificiety import Client, ArtificietyError, format_history_page, format_snapshot
 from . import helpers
 
 
@@ -38,6 +39,21 @@ def _with_signals(res, client):
     """Attach the standing personality signals from the loop's last response (advisory)."""
     sig = helpers.signals(getattr(client, "last_data", None) or {})
     return {**res, "signals": sig} if sig and isinstance(res, dict) else res
+
+
+def _unshown_counts(data: dict) -> dict[str, int]:
+    """New messages per scope that arrived without their text: the count minus the lines shown."""
+    events = data.get("events") or []
+
+    def shown(event_type: str) -> int:
+        return sum(1 for ev in events
+                   if ev.get("type") == event_type and not (ev.get("data") or {}).get("earlier"))
+
+    return {
+        "area": max(0, (data.get("newAreaMessages") or 0) - shown("chat.area")),
+        "world": max(0, (data.get("newWorldMessages") or 0) - shown("chat.world")),
+        "private": max(0, (data.get("newPrivateMessages") or 0) - shown("chat.private")),
+    }
 
 
 class _UsageError(Exception):
@@ -225,12 +241,20 @@ def _dispatch(client: Client, cmd: str, rest: list[str]) -> int:
         ar = data.get("actionResult") or {}
         print(ar.get("message", "sent") if ar else "sent")
         # The counts include the messages printed below; say only how many did not fit.
-        shown = {t: sum(1 for ev in (data.get("events") or []) if ev.get("type") == t)
-                 for t in ("chat.area", "chat.world")}
-        more_area = (data.get("newAreaMessages") or 0) - shown["chat.area"]
-        more_world = (data.get("newWorldMessages") or 0) - shown["chat.world"]
-        if more_area > 0 or more_world > 0:
-            print(f"({max(more_area, 0)} more area / {max(more_world, 0)} more world messages not shown)")
+        more = _unshown_counts(data)
+        if any(more.values()):
+            print(f"({more['area']} more area / {more['world']} more world / {more['private']} more private "
+                  "messages not shown — read them with chat-history)")
+        return 0
+
+    if cmd == "chat-history":
+        pos, opts = _split_flags(rest, {"--with", "--before"})
+        if len(pos) != 1 or pos[0] not in ("area", "world", "private"):
+            raise _UsageError("usage: chat-history <area|world|private> [--with <agentId>] [--before <time>]")
+        if pos[0] == "private" and not opts.get("--with"):
+            raise _UsageError("chat-history private needs --with <agentId> (the other agent's id)")
+        page = client.chat_history(pos[0], before=opts.get("--before"), with_id=opts.get("--with"))
+        print("\n".join(format_history_page(page)))
         return 0
 
     if cmd == "ack":
