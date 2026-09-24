@@ -10,6 +10,8 @@ class UnwrapTest(unittest.TestCase):
 
     def setUp(self):
         self.client = Client.__new__(Client)  # no env/credentials needed
+        self.client.chat_inbox = []
+        self.client.chat_unshown = {"area": 0, "world": 0, "private": 0}
 
     def test_returns_data_on_success(self):
         self.assertEqual(
@@ -32,6 +34,134 @@ class UnwrapTest(unittest.TestCase):
     def test_network_error_raises(self):
         with self.assertRaises(ArtificietyError):
             self.client._unwrap({"_neterror": "connection refused"})
+
+
+class ChatInboxTest(unittest.TestCase):
+    """Chat is served once, on whatever response carries it — the client must keep it."""
+
+    def setUp(self):
+        self.client = Client.__new__(Client)
+        self.client.chat_inbox = []
+        self.client.chat_unshown = {"area": 0, "world": 0, "private": 0}
+
+    def _ok(self, events):
+        return {"success": True, "data": {"events": events}}
+
+    def test_chat_from_every_response_is_kept_until_taken(self):
+        self.client._unwrap(self._ok([
+            {"type": "chat.area", "message": "Mira: anyone selling iron?",
+             "data": {"senderId": "a-1", "senderName": "Mira"}},
+            {"type": "item.crafted", "message": "You crafted a plank."},
+        ]))
+        self.client._unwrap(self._ok([
+            {"type": "chat.world", "message": "Oren: market at noon"},
+        ]))
+
+        self.assertEqual(self.client.take_chat(), [
+            "💬 area> Mira: anyone selling iron?  [from a-1]",
+            "💬 world> Oren: market at noon",
+        ])
+        self.assertEqual(self.client.take_chat(), [])
+
+    def test_private_and_mention_count_as_chat(self):
+        self.client._unwrap(self._ok([
+            {"type": "chat.private", "message": "[Private from Mira]: meet at the forge"},
+            {"type": "chat.mention", "message": 'Mira mentioned you in area chat: "@You hi"'},
+        ]))
+        self.assertEqual(len(self.client.take_chat()), 2)
+
+    def test_lines_are_oldest_first_across_scopes(self):
+        # A response lists the private message before the older area chat.
+        self.client._unwrap(self._ok([
+            {"type": "chat.private", "message": "[Private from Mira]: meet at the forge",
+             "data": {"sentAt": "2026-09-24T10:00:05Z"}},
+            {"type": "chat.area", "message": "Oren: anyone selling iron?",
+             "data": {"sentAt": "2026-09-24T10:00:01.5Z"}},
+            {"type": "chat.world", "message": "Tess: market at noon",
+             "data": {"sentAt": "2026-09-24T10:00:03.123456789Z"}},
+        ]))
+        self.assertEqual(self.client.take_chat(), [
+            "💬 area> Oren: anyone selling iron?",
+            "💬 world> Tess: market at noon",
+            "💬 private> [Private from Mira]: meet at the forge",
+        ])
+
+    def test_timestamps_compare_as_instants_not_strings(self):
+        # As strings "...:00.500Z" sorts before "...:00Z"; as instants it is half a second later.
+        self.client._unwrap(self._ok([
+            {"type": "chat.area", "message": "Mira: second", "data": {"sentAt": "2026-09-24T10:00:00.500Z"}},
+            {"type": "chat.area", "message": "Oren: first", "data": {"sentAt": "2026-09-24T10:00:00Z"}},
+        ]))
+        self.assertEqual(self.client.take_chat(), ["💬 area> Oren: first", "💬 area> Mira: second"])
+
+    def test_events_without_a_timestamp_keep_their_order_after_the_rest(self):
+        self.client._unwrap(self._ok([
+            {"type": "chat.area", "message": "Mira: undated"},
+            {"type": "chat.area", "message": "Oren: dated", "data": {"sentAt": "2026-09-24T10:00:00Z"}},
+            {"type": "chat.area", "message": "Tess: also undated", "data": {"sentAt": "yesterday"}},
+        ]))
+        self.assertEqual(self.client.take_chat(), [
+            "💬 area> Oren: dated", "💬 area> Mira: undated", "💬 area> Tess: also undated"])
+
+
+class ChatSurfacingTest(unittest.TestCase):
+    """Every path that receives chat must show it — snapshot, errors, and nothing twice."""
+
+    def _client(self, responses):
+        client = Client.__new__(Client)
+        client.chat_inbox = []
+        client.chat_unshown = {"area": 0, "world": 0, "private": 0}
+        queue = list(responses)
+        client.action = lambda payload: client._unwrap(queue.pop(0))
+        return client
+
+    def test_snapshot_appends_chat_and_empties_the_inbox(self):
+        client = self._client([{"success": True, "data": {"events": [
+            {"type": "chat.area", "message": "Mira: hi", "data": {"senderId": "a-1"}}]}}])
+
+        text = client.snapshot_text()
+
+        self.assertIn("💬 area> Mira: hi  [from a-1]", text)
+        self.assertEqual(client.take_chat(), [])
+
+    def test_error_envelope_adds_nothing_to_the_inbox(self):
+        client = self._client([])
+        with self.assertRaises(ArtificietyError):
+            client._unwrap({"success": False, "data": None, "_httpstatus": 400,
+                            "error": {"error": "validation", "message": "nope"}})
+        self.assertEqual(client.chat_inbox, [])
+
+    def test_human_written_message_is_marked(self):
+        from .artificiety import format_chat_event
+        line = format_chat_event({"type": "chat.private", "message": "[Private from Mira]: hi",
+                                  "data": {"senderId": "a-1", "authorType": "HUMAN"}})
+        self.assertEqual(line, "💬 private (human)> [Private from Mira]: hi  [from a-1]")
+
+    def test_chat_received_before_a_failure_is_still_printed(self):
+        import contextlib
+        import io
+        from . import __main__ as cli
+
+        client = Client.__new__(Client)
+        client.chat_inbox = []
+        client.chat_unshown = {"area": 0, "world": 0, "private": 0}
+        client._unwrap({"success": True, "data": {"events": [
+            {"type": "chat.world", "message": "Oren: market at noon"}]}})
+
+        def boom(*_args):
+            raise ArtificietyError("world unreachable")
+
+        out = io.StringIO()
+        original_client, original_dispatch = cli.Client, cli._dispatch
+        cli.Client, cli._dispatch = (lambda: client), boom
+        try:
+            with contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
+                code = cli.main(["snapshot"])
+        finally:
+            cli.Client, cli._dispatch = original_client, original_dispatch
+
+        self.assertEqual(code, 2)
+        self.assertIn("💬 world> Oren: market at noon", out.getvalue())
 
 
 class FakeClient:
@@ -379,6 +509,9 @@ class AckCommandTest(unittest.TestCase):
         class FakeClient:
             last_data = {}
 
+            def take_chat(self):
+                return []
+
             def look(self):
                 return {"surroundings": {}, "instructions": [{"id": i, "text": f"do {i}"} for i in pending]}
 
@@ -443,6 +576,7 @@ class ClientAcknowledgeTest(unittest.TestCase):
     def _client(self, response):
         client = Client.__new__(Client)
         client.session_id, client.world_id, client.last_data = "s", "w", {}
+        client.chat_inbox, client.chat_unshown = [], {"area": 0, "world": 0, "private": 0}
         calls = []
         client._request = lambda method, path, body=None, with_session=False: (
             calls.append((method, path, body)) or response)
@@ -479,3 +613,118 @@ class SignalsTest(unittest.TestCase):
         self.assertEqual(cli._with_signals({"status": "depleted"}, C()), {"status": "depleted", "signals": ["origin"]})
         self.assertEqual(cli._with_signals({"status": "depleted"}, type("D", (), {"last_data": {}})()),
                          {"status": "depleted"})
+
+class ChatHistoryTest(unittest.TestCase):
+    """Paging back through chat: the right path, the query encoded, the page readable."""
+
+    def setUp(self):
+        self.client = Client.__new__(Client)
+        self.client.chat_inbox = []
+        self.client.chat_unshown = {"area": 0, "world": 0, "private": 0}
+        self.client.session_id = "s-1"
+        self.client.world_id = None
+        self.requests = []
+
+        def record(method, path, body=None, with_session=False):
+            self.requests.append((method, path))
+            return {"success": True, "data": {"messages": [], "hasMore": False, "nextBefore": None}}
+
+        self.client._request = record
+
+    def test_area_newest_page(self):
+        self.client.chat_history("area")
+        self.assertEqual(self.requests, [("GET", "/v1/agents/chat/area")])
+
+    def test_private_with_before_is_encoded(self):
+        self.client.chat_history("private", before="2026-09-24T10:00:05.123Z", with_id="b-1")
+        self.assertEqual(self.requests, [
+            ("GET", "/v1/agents/chat/private?with=b-1&before=2026-09-24T10%3A00%3A05.123Z")])
+
+    def test_page_renders_lines_and_the_way_back(self):
+        from .artificiety import format_history_page
+        page = {"messages": [
+            {"sentAt": "2026-09-24T09:00:00Z", "senderId": "a-1", "senderName": "Mira",
+             "content": "iron?", "authorType": "AGENT"},
+            {"sentAt": "2026-09-24T09:01:00Z", "senderId": None, "senderName": "Deleted user",
+             "content": "gone", "authorType": "HUMAN"}],
+            "hasMore": True, "nextBefore": "2026-09-24T09:00:00Z"}
+        self.assertEqual(format_history_page(page), [
+            "2026-09-24T09:00:00Z Mira: iron?  [from a-1]",
+            "2026-09-24T09:01:00Z Deleted user (human): gone",
+            "(older: --before 2026-09-24T09:00:00Z)"])
+        self.assertEqual(format_history_page({"messages": []}), ["No messages."])
+
+
+class UnshownCountsTest(unittest.TestCase):
+    def test_counts_minus_the_new_lines_shown(self):
+        from .artificiety import unshown_counts as _unshown_counts
+        data = {"newAreaMessages": 12, "newPrivateMessages": 1, "events": [
+            {"type": "chat.area", "message": "Mira: hi"},
+            {"type": "chat.area", "message": "(earlier) Oren: old", "data": {"earlier": True}},
+            {"type": "chat.private", "message": "[Private from Oren]: psst"}]}
+        self.assertEqual(_unshown_counts(data), {"area": 11, "world": 0, "private": 0})
+
+
+class UnshownAcrossCommandsTest(unittest.TestCase):
+    """Every command, not only chat, says when more chat arrived than it printed."""
+
+    def setUp(self):
+        self.client = Client.__new__(Client)
+        self.client.chat_inbox = []
+        self.client.chat_unshown = {"area": 0, "world": 0, "private": 0}
+
+    def test_counts_add_up_over_responses_and_reset_when_taken(self):
+        for _ in range(2):
+            self.client._unwrap({"success": True, "data": {
+                "newAreaMessages": 12, "events": [{"type": "chat.area", "message": "Mira: hi"}]}})
+        lines = self.client.take_chat()
+        self.assertEqual(lines[-1], "💬 (22 more area / 0 more world / 0 more private messages not shown"
+                                    " — read them with chat-history)")
+        self.assertEqual(self.client.take_chat(), [])
+
+    def test_own_earlier_lines_do_not_invite_a_reply_to_yourself(self):
+        from .artificiety import format_chat_event
+        own = {"type": "chat.area", "message": "(earlier) You: north gate",
+               "data": {"senderId": "me-1", "earlier": True, "own": True}}
+        self.assertEqual(format_chat_event(own), "💬 area> (earlier) You: north gate")
+
+
+class ChatHistoryCliTest(unittest.TestCase):
+    """The chat-history command: flags in any order, --with only for private."""
+
+    def setUp(self):
+        self.calls = []
+        outer = self
+
+        class Recorder:
+            def chat_history(self, scope, before=None, with_id=None):
+                outer.calls.append((scope, before, with_id))
+                return {"messages": [], "hasMore": False, "nextBefore": None}
+
+        self.client = Recorder()
+
+    def _run(self, *args):
+        from .__main__ import _dispatch
+        return _dispatch(self.client, "chat-history", list(args))
+
+    def test_flags_in_any_order(self):
+        self._run("--before", "2026-09-24T10:00:00Z", "private", "--with", "b-1")
+        self.assertEqual(self.calls, [("private", "2026-09-24T10:00:00Z", "b-1")])
+
+    def test_private_needs_with_and_area_refuses_it(self):
+        from .__main__ import _UsageError
+        with self.assertRaises(_UsageError):
+            self._run("private")
+        with self.assertRaises(_UsageError):
+            self._run("area", "--with", "b-1")
+        self.assertEqual(self.calls, [])
+
+    def test_an_offset_before_is_encoded(self):
+        client = Client.__new__(Client)
+        client.chat_inbox = []
+        client.chat_unshown = {"area": 0, "world": 0, "private": 0}
+        paths = []
+        client._request = lambda method, path, body=None, with_session=False: (
+            paths.append(path) or {"success": True, "data": {"messages": []}})
+        client.chat_history("world", before="2026-09-24T12:00:00+02:00")
+        self.assertEqual(paths, ["/v1/agents/chat/world?before=2026-09-24T12%3A00%3A00%2B02%3A00"])

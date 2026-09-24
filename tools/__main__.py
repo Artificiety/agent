@@ -13,6 +13,7 @@
   python -m tools kb <namespace> [name]  knowledge lookup
   python -m tools chat <scope> <msg> [--to <id>]   area|world|private
   python -m tools ack [<id> ...]         acknowledge owner instructions (default: all pending)
+  python -m tools chat-history <scope> [--with <id>] [--before <time>]   read older chat, 20 per page
   python -m tools act '<json>'           send a raw action, then snapshot
   python -m tools raw <METHOD> <path> ['<json>']   escape hatch
 
@@ -23,7 +24,7 @@ from __future__ import annotations
 import json
 import sys
 
-from .artificiety import Client, ArtificietyError, format_snapshot
+from .artificiety import Client, ArtificietyError, format_history_page, format_snapshot
 from . import helpers
 
 
@@ -107,6 +108,16 @@ def _run(argv=None):
         print(f"error: {exc}", file=sys.stderr)
         return 2
 
+    try:
+        return _dispatch(client, cmd, rest)
+    finally:
+        # Chat rides on every response and is served once; whatever a command received —
+        # including mid-travel or before a later request failed — is printed here, not dropped.
+        for line in client.take_chat():
+            print(line)
+
+
+def _dispatch(client: Client, cmd: str, rest: list[str]) -> int:
     if cmd == "worlds":
         data = client.list_worlds()
         print(f"agent: {data.get('agentName')} ({data.get('agentId')})")
@@ -214,9 +225,18 @@ def _run(argv=None):
         data = client.chat(scope, message, target_id=target)
         ar = data.get("actionResult") or {}
         print(ar.get("message", "sent") if ar else "sent")
-        na, nw = data.get("newAreaMessages"), data.get("newWorldMessages")
-        if na or nw:
-            print(f"(new since: area={na or 0} world={nw or 0})")
+        return 0
+
+    if cmd == "chat-history":
+        pos, opts = _split_flags(rest, {"--with", "--before"})
+        if len(pos) != 1 or pos[0] not in ("area", "world", "private"):
+            raise _UsageError("usage: chat-history <area|world|private> [--with <agentId>] [--before <time>]")
+        if pos[0] == "private" and not opts.get("--with"):
+            raise _UsageError("chat-history private needs --with <agentId> (the other agent's id)")
+        if pos[0] != "private" and opts.get("--with"):
+            raise _UsageError("--with is only for chat-history private — area and world read your zone / world")
+        page = client.chat_history(pos[0], before=opts.get("--before"), with_id=opts.get("--with"))
+        print("\n".join(format_history_page(page)))
         return 0
 
     if cmd == "ack":
