@@ -159,7 +159,7 @@ def _run(argv=None):
             if len(rest) < 2:
                 raise _UsageError("usage: travel <x> <y> | travel @<entityId>")
             res = helpers.travel_to(client, x=_int(rest[0], "x"), y=_int(rest[1], "y"))
-        _print(res)
+        _print(_with_signals(res, client))
         print("---")
         print(client.snapshot_text())
         return 0
@@ -220,16 +220,17 @@ def _run(argv=None):
         return 0
 
     if cmd == "ack":
-        if rest:
-            ids = list(rest)
-        else:
-            pending = helpers.pending_instructions(client.look())
-            if not pending:
-                print("no pending instructions")
-                return 0
-            for inst in pending:  # echo exactly what is being acknowledged
-                print(f"acknowledging [{inst['id']}]: {inst.get('text') or ''}")
-            ids = [inst["id"] for inst in pending]
+        pending = {inst["id"]: inst for inst in helpers.pending_instructions(client.look())}
+        wanted = list(rest) or list(pending)
+        for iid in wanted:
+            if iid not in pending:
+                print(f"not pending (already acknowledged, or not yours): {iid}")
+        ids = [iid for iid in wanted if iid in pending]
+        if not ids:
+            print("no pending instructions" if not pending else "nothing acknowledged")
+            return 0
+        for iid in ids:  # echo exactly what is being acknowledged
+            print(f"acknowledging [{iid}]: {pending[iid].get('text') or ''}")
         data = client.acknowledge(ids)
         print(f"acknowledged {len(ids)}")
         print(format_snapshot(data))

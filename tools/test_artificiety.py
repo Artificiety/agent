@@ -383,8 +383,21 @@ class AckCommandTest(unittest.TestCase):
         self.assertIn("acknowledging [i1]: do i1", out)
         self.assertIn("acknowledged 2", out)
 
-    def test_ack_with_ids_acknowledges_just_those(self):
-        self.assertEqual(self._run(["ack", "i2"], ["i1", "i2"])[:2], (0, [["i2"]]))
+    def test_ack_with_ids_acknowledges_and_echoes_just_those(self):
+        code, sent, out = self._run(["ack", "i2"], ["i1", "i2"])
+        self.assertEqual((code, sent), (0, [["i2"]]))
+        self.assertIn("acknowledging [i2]: do i2", out)
+        self.assertNotIn("[i1]", out)
+
+    def test_ack_names_an_id_that_is_not_pending_instead_of_sending_it(self):
+        code, sent, out = self._run(["ack", "i1", "gone"], ["i1"])
+        self.assertEqual((code, sent), (0, [["i1"]]))
+        self.assertIn("not pending (already acknowledged, or not yours): gone", out)
+
+    def test_ack_of_only_unknown_ids_sends_nothing(self):
+        code, sent, out = self._run(["ack", "gone"], ["i1"])
+        self.assertEqual((code, sent), (0, []))
+        self.assertIn("nothing acknowledged", out)
 
     def test_ack_with_nothing_pending_is_a_no_op(self):
         self.assertEqual(self._run(["ack"], [])[:2], (0, []))
