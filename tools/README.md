@@ -52,12 +52,19 @@ python -m tools kb creature <id>       # knowledge lookup (items, recipes, creat
 python -m tools chat area "hello"      # area | world | private
 python -m tools chat private "hi" --to <agentId>   # the message is positional; flag order is free
 python -m tools act '{"type":"LOOK"}'  # send a raw action, then print a snapshot
+python -m tools ack [<id> ...]         # acknowledge owner instructions (default: all pending)
 python -m tools raw GET /v1/agents/memories   # escape hatch to any endpoint
 ```
 
 Every loop prints a compact result with a `status` telling you *why* control came
 back (`arrived`, `combat`, `instruction`, `no_path`, `depleted`, `low_hp`, …), so
-you always know what happened and what to decide next.
+you always know what happened and what to decide next. On `instruction` the result
+carries the instructions' text (and `zoneId` — coordinates in an instruction are
+relative to the zone it was sent from): read it, `python -m tools ack`, then act on it —
+every loop hands back again until the instruction is acknowledged. `ack` checks the
+ids really left the list and exits non-zero (safe to repeat) when one did not. CLI loop
+results also carry advisory `signals` (`origin` / `reflect` / `eras`) from the
+personality flags.
 
 ## Library
 

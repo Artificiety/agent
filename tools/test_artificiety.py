@@ -2,7 +2,7 @@
 
 import unittest
 
-from .artificiety import ArtificietyError, Client
+from .artificiety import ArtificietyError, Client, format_snapshot
 
 
 class UnwrapTest(unittest.TestCase):
@@ -106,7 +106,7 @@ class InterruptContractTest(unittest.TestCase):
     @staticmethod
     def _snapshot(**extra):
         data = {
-            "instructions": [{"id": "i1"}],
+            "instructions": [{"id": "i1", "from": "owner", "text": "Go to the market"}],
             "health": {"current": 90, "max": 100},
             "energy": {"energy": 90, "maxEnergy": 100, "resting": True},
             "hunger": {"hunger": 90, "maxHunger": 100},
@@ -147,11 +147,45 @@ class InterruptContractTest(unittest.TestCase):
                 client, _sent = self._client()
                 self.assertEqual(call(client)["status"], "instruction")
 
+    def test_the_hand_back_carries_the_instruction_text_and_how_to_ack(self):
+        for name, call in (
+            ("gather", lambda c: self.helpers.gather(c, "n1")),
+            ("travel_to", lambda c: self.helpers.travel_to(c, x=1, y=1)),
+            ("fight", lambda c: self.helpers.fight(c, "wolf")),
+        ):
+            with self.subTest(loop=name):
+                client, _sent = self._client()
+                out = call(client)
+                self.assertEqual(out["instructions"][0]["text"], "Go to the market")
+                self.assertEqual(out["instructionIds"], ["i1"])
+                self.assertIn("python -m tools ack", out["next"])
+
     def test_rest_until_prefers_the_instruction_over_an_already_met_target(self):
         # energy is at 90 and the target is 99 -> 'reached' would otherwise win and
         # the instruction would be dropped without the caller ever seeing it.
         client, _sent = self._client()
         self.assertEqual(self.helpers.rest_until(client, energy=50)["status"], "instruction")
+
+    def test_gather_hands_back_an_instruction_met_on_the_way_to_the_node(self):
+        far_node = {"surroundings": {"nearbyEntities": [
+            {"id": "n1", "type": "RESOURCE", "distance": 4, "interactions": ["CHOP"]}]},
+            "instructions": [], "health": {"current": 90, "max": 100}}
+        arrived_instr = self._snapshot()
+        calls = []
+
+        class C:
+            def look(self):
+                calls.append("look")
+                return far_node if len(calls) == 1 else arrived_instr
+
+            def action(self, payload):
+                calls.append(payload)
+                return arrived_instr
+
+        out = self.helpers.gather(C(), "n1")
+        self.assertEqual(out["status"], "instruction")
+        self.assertEqual(out["instructions"][0]["text"], "Go to the market")
+        self.assertIn("python -m tools ack", out["next"])
 
     def test_fight_does_not_strike_before_handing_back(self):
         client, sent = self._client()
@@ -282,3 +316,166 @@ class GatherStopReasonTest(unittest.TestCase):
 
     def test_unlabelled_failure_falls_back_to_its_reason(self):
         self.assertEqual(self.reason({"success": False, "reason": "LOW_ENERGY"}), "low_energy")
+
+
+class SnapshotPersonalityTest(unittest.TestCase):
+    """The snapshot is what a toolkit-driven agent reads instead of the JSON. Anything the
+    prompt tells it to act on must survive the compaction, or it can never act on it."""
+
+    BASE = {"surroundings": {"zoneName": "Grove", "x": 1, "y": 2}}
+
+    def test_hint_and_reflection_flag_are_shown(self):
+        out = format_snapshot({**self.BASE, "personalityHint": "You guard what remains.",
+                               "personalityRegenerateRequested": True})
+        self.assertIn("You: You guard what remains.", out)
+        self.assertIn("⚑ REFLECT", out)
+        self.assertIn("PUT /v1/agents/personality", out)
+
+    def test_origin_when_no_personality_has_formed_yet(self):
+        out = format_snapshot({**self.BASE, "personalityHint": None,
+                               "personalityRegenerateRequested": True})
+        self.assertIn("⚑ ORIGIN", out)
+        self.assertNotIn("You:", out)
+
+    def test_consolidation_flag_is_shown(self):
+        out = format_snapshot({**self.BASE, "personalityConsolidationRequested": True})
+        self.assertIn("⚑ ERAS", out)
+
+    def test_nothing_extra_when_no_flag_is_set(self):
+        out = format_snapshot({**self.BASE, "personalityRegenerateRequested": False})
+        self.assertNotIn("⚑", out)
+
+
+class SnapshotInstructionTest(unittest.TestCase):
+    """The backend sends instructions as {id, from, text} (world-protocol AgentInstruction)."""
+
+    def test_instruction_text_and_ack_hint_are_shown(self):
+        out = format_snapshot({"surroundings": {}, "instructions": [
+            {"id": "i1", "from": "owner", "text": "Meet me at the fountain"}]})
+        self.assertIn("⚑ INSTRUCTION [i1] from owner: Meet me at the fountain", out)
+        self.assertIn("read it, acknowledge it (python -m tools ack), then act on it", out)
+
+    def test_an_instruction_from_another_zone_is_flagged(self):
+        out = format_snapshot({"surroundings": {"zoneId": "z-here"}, "instructions": [
+            {"id": "i1", "text": "Meet me at (40,12)", "zoneId": "z-other"}]})
+        self.assertIn("sent from another zone", out)
+        same = format_snapshot({"surroundings": {"zoneId": "z-here"}, "instructions": [
+            {"id": "i1", "text": "Meet me at (40,12)", "zoneId": "z-here"}]})
+        self.assertNotIn("another zone", same)
+
+    def test_context_hint_still_renders_next_to_the_ack_line(self):
+        out = format_snapshot({"surroundings": {}, "contextHint": "You have 1 pending instruction",
+                               "instructions": [{"id": "i1", "text": "t"}]})
+        self.assertIn("Hint: You have 1 pending instruction", out)
+
+
+class AckCommandTest(unittest.TestCase):
+
+    def _run(self, argv, pending, stuck=()):
+        from . import __main__ as cli
+
+        sent = []
+
+        class FakeClient:
+            last_data = {}
+
+            def look(self):
+                return {"surroundings": {}, "instructions": [{"id": i, "text": f"do {i}"} for i in pending]}
+
+            def acknowledge(self, ids):
+                sent.append(list(ids))
+                return {"surroundings": {},
+                        "instructions": [{"id": i, "text": f"do {i}"} for i in pending if i in stuck]}
+
+        original = cli.Client
+        cli.Client = FakeClient
+        try:
+            import contextlib
+            import io
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                code = cli._run(argv)
+        finally:
+            cli.Client = original
+        return code, sent, out.getvalue()
+
+    def test_ack_without_ids_acknowledges_and_echoes_every_pending_instruction(self):
+        code, sent, out = self._run(["ack"], ["i1", "i2"])
+        self.assertEqual((code, sent), (0, [["i1", "i2"]]))
+        self.assertIn("acknowledged [i1]: do i1", out)
+        self.assertIn("acknowledged [i2]: do i2", out)
+
+    def test_ack_with_ids_acknowledges_and_echoes_just_those(self):
+        code, sent, out = self._run(["ack", "i2"], ["i1", "i2"])
+        self.assertEqual((code, sent), (0, [["i2"]]))
+        self.assertIn("acknowledged [i2]: do i2", out)
+        self.assertNotIn("[i1]", out)
+
+    def test_ack_names_an_id_that_is_not_pending_instead_of_sending_it(self):
+        code, sent, out = self._run(["ack", "i1", "gone"], ["i1"])
+        self.assertEqual((code, sent), (0, [["i1"]]))
+        self.assertIn("not pending (already acknowledged, or not yours): gone", out)
+
+    def test_ack_of_only_unknown_ids_sends_nothing(self):
+        code, sent, out = self._run(["ack", "gone"], ["i1"])
+        self.assertEqual((code, sent), (1, []))
+        self.assertIn("error: nothing acknowledged", out)
+
+    def test_an_acknowledgement_that_did_not_take_is_reported_not_claimed(self):
+        # The backend answers the LOOK even when the acknowledgement itself failed.
+        code, sent, out = self._run(["ack"], ["i1", "i2"], stuck=["i2"])
+        self.assertEqual((code, sent), (1, [["i1", "i2"]]))
+        self.assertIn("acknowledged [i1]: do i1", out)
+        self.assertNotIn("acknowledged [i2]", out)
+        self.assertIn("error: not acknowledged (safe to repeat `python -m tools ack`): i2", out)
+
+    def test_ack_sends_a_repeated_id_once(self):
+        code, sent, _out = self._run(["ack", "i1", "i1"], ["i1"])
+        self.assertEqual((code, sent), (0, [["i1"]]))
+
+    def test_ack_with_nothing_pending_is_a_no_op(self):
+        self.assertEqual(self._run(["ack"], [])[:2], (0, []))
+
+
+class ClientAcknowledgeTest(unittest.TestCase):
+    """acknowledge rides a LOOK's instructionIds (one call, fresh read) and raises on failure."""
+
+    def _client(self, response):
+        client = Client.__new__(Client)
+        client.session_id, client.world_id, client.last_data = "s", "w", {}
+        calls = []
+        client._request = lambda method, path, body=None, with_session=False: (
+            calls.append((method, path, body)) or response)
+        return client, calls
+
+    def test_acknowledge_sends_instruction_ids_on_a_look(self):
+        client, calls = self._client({"success": True, "data": {"instructions": []}})
+        client.acknowledge(["i1"])
+        self.assertEqual(calls, [("POST", "/v1/agents/action", {"type": "LOOK", "instructionIds": ["i1"]})])
+
+    def test_a_rejected_acknowledge_raises(self):
+        client, _calls = self._client({"success": False, "data": None,
+                                        "error": {"message": "instructionIds contains an invalid UUID."},
+                                        "_httpstatus": 400})
+        with self.assertRaises(ArtificietyError):
+            client.acknowledge(["nope"])
+
+
+class SignalsTest(unittest.TestCase):
+
+    def test_loop_results_carry_the_standing_signals(self):
+        from . import helpers
+        self.assertEqual(helpers.signals({"personalityRegenerateRequested": True}), ["origin"])
+        self.assertEqual(helpers.signals({"personalityRegenerateRequested": True, "personalityHint": "h",
+                                          "personalityConsolidationRequested": True}), ["reflect", "eras"])
+        self.assertEqual(helpers.signals({}), [])
+
+    def test_the_cli_attaches_them_to_a_loop_result(self):
+        from . import __main__ as cli
+
+        class C:
+            last_data = {"personalityRegenerateRequested": True, "personalityHint": ""}
+
+        self.assertEqual(cli._with_signals({"status": "depleted"}, C()), {"status": "depleted", "signals": ["origin"]})
+        self.assertEqual(cli._with_signals({"status": "depleted"}, type("D", (), {"last_data": {}})()),
+                         {"status": "depleted"})

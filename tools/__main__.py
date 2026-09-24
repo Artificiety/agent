@@ -12,6 +12,7 @@
   python -m tools eat <itemId> [--until PCT]  consume food
   python -m tools kb <namespace> [name]  knowledge lookup
   python -m tools chat <scope> <msg> [--to <id>]   area|world|private
+  python -m tools ack [<id> ...]         acknowledge owner instructions (default: all pending)
   python -m tools act '<json>'           send a raw action, then snapshot
   python -m tools raw <METHOD> <path> ['<json>']   escape hatch
 
@@ -31,6 +32,12 @@ def _print(obj):
         print(obj)
     else:
         print(json.dumps(obj, ensure_ascii=False, indent=2))
+
+
+def _with_signals(res, client):
+    """Attach the standing personality signals from the loop's last response (advisory)."""
+    sig = helpers.signals(getattr(client, "last_data", None) or {})
+    return {**res, "signals": sig} if sig and isinstance(res, dict) else res
 
 
 class _UsageError(Exception):
@@ -152,7 +159,7 @@ def _run(argv=None):
             if len(rest) < 2:
                 raise _UsageError("usage: travel <x> <y> | travel @<entityId>")
             res = helpers.travel_to(client, x=_int(rest[0], "x"), y=_int(rest[1], "y"))
-        _print(res)
+        _print(_with_signals(res, client))
         print("---")
         print(client.snapshot_text())
         return 0
@@ -163,14 +170,14 @@ def _run(argv=None):
             raise _UsageError("usage: gather <nodeId> [--interaction <TYPE>] [--until <n>]")
         until = _int(opts["--until"], "--until") if "--until" in opts else None
         res = helpers.gather(client, pos[0], interaction=opts.get("--interaction"), until=until)
-        _print(res)
+        _print(_with_signals(res, client))
         return 0
 
     if cmd == "rest":
         pos, _opts = _split_flags(rest, set())
         target = _int(pos[0], "energy target") if pos else 100
         res = helpers.rest_until(client, energy=target)
-        _print(res)
+        _print(_with_signals(res, client))
         return 0
 
     if cmd == "fight":
@@ -179,7 +186,7 @@ def _run(argv=None):
             raise _UsageError("usage: fight <creatureId> [--flee-hp <pct>]")
         flee_hp = _int(opts["--flee-hp"], "--flee-hp") if "--flee-hp" in opts else None
         res = helpers.fight(client, pos[0], flee_hp=flee_hp)
-        _print(res)
+        _print(_with_signals(res, client))
         return 0
 
     if cmd == "eat":
@@ -189,7 +196,7 @@ def _run(argv=None):
         until = _int(opts["--until"], "--until") if "--until" in opts else None
         count = _int(opts["--count"], "--count") if "--count" in opts else 10
         res = helpers.eat(client, pos[0], until_pct=until, max_count=count)
-        _print(res)
+        _print(_with_signals(res, client))
         return 0
 
     if cmd == "kb":
@@ -211,6 +218,31 @@ def _run(argv=None):
         if na or nw:
             print(f"(new since: area={na or 0} world={nw or 0})")
         return 0
+
+    if cmd == "ack":
+        pending = {inst["id"]: inst for inst in helpers.pending_instructions(client.look())}
+        wanted = list(dict.fromkeys(rest)) or list(pending)
+        unknown = [iid for iid in wanted if iid not in pending]
+        for iid in unknown:
+            print(f"not pending (already acknowledged, or not yours): {iid}")
+        ids = [iid for iid in wanted if iid in pending]
+        if not ids:
+            if not rest:
+                print("no pending instructions")
+                return 0
+            print("error: nothing acknowledged — none of those ids is pending")
+            return 1
+        data = client.acknowledge(ids)
+        # The backend answers even when the acknowledgement itself failed, so check the
+        # ids really left the list rather than trusting the call.
+        still = {i["id"] for i in helpers.pending_instructions(data)} & set(ids)
+        for iid in ids:  # echo exactly what was acknowledged
+            if iid not in still:
+                print(f"acknowledged [{iid}]: {pending[iid].get('text') or ''}")
+        if still:
+            print("error: not acknowledged (safe to repeat `python -m tools ack`): " + ", ".join(sorted(still)))
+        print(format_snapshot(data))
+        return 1 if still else 0
 
     if cmd == "act":
         if not rest:
