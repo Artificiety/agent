@@ -66,7 +66,8 @@ by `sentAt`. A response carries only the newest chat; when more arrived, every c
 "N more … not shown" line and `chat-history` pages back through the rest.
 
 `Client` methods return the response's `data` and raise `ArtificietyError` with the backend's
-message on a failed request — `acknowledge` included. Chat received on the way collects in
+message on a failed request. `acknowledge` rides a LOOK: a failed dispatch raises, a failed
+acknowledgement does not, so check that the ids have left `instructions`. Chat received on the way collects in
 `chat_inbox` (capped at 500) until `take_chat()` prints it.
 
 Every loop prints a compact result with a `status` telling you *why* control came

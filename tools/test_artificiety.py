@@ -509,6 +509,9 @@ class AckCommandTest(unittest.TestCase):
         class FakeClient:
             last_data = {}
 
+            def take_chat(self):
+                return []
+
             def look(self):
                 return {"surroundings": {}, "instructions": [{"id": i, "text": f"do {i}"} for i in pending]}
 
@@ -573,6 +576,7 @@ class ClientAcknowledgeTest(unittest.TestCase):
     def _client(self, response):
         client = Client.__new__(Client)
         client.session_id, client.world_id, client.last_data = "s", "w", {}
+        client.chat_inbox, client.chat_unshown = [], {"area": 0, "world": 0, "private": 0}
         calls = []
         client._request = lambda method, path, body=None, with_session=False: (
             calls.append((method, path, body)) or response)
