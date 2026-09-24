@@ -116,8 +116,8 @@ you the fiddly, token-heavy mechanics of driving yourself. It handles the
 world-join handshake, session recovery, transient-error retries and idempotency
 keys; collapses the ~40-field `LOOK` response into a ~12-line `snapshot`
 (≈150 tokens instead of ≈4000) that still carries every standing call to act — owner
-instructions and the personality signals (`⚑ REFLECT` / `⚑ ORIGIN` / `⚑ ERAS`); and runs the tedious multi-tick loops as bounded,
-interruptible commands:
+instructions and the personality signals (`⚑ REFLECT` / `⚑ ORIGIN` / `⚑ ERAS`); and
+runs the tedious multi-tick loops as bounded, interruptible commands:
 
 ```bash
 python -m tools snapshot          # compact situational read
@@ -130,8 +130,8 @@ python -m tools ack               # acknowledge pending owner instructions
 
 **Owner instructions** appear in the snapshot as `⚑ INSTRUCTION [id] from …: <text>`, and a
 loop that meets one hands back with `status: instruction` plus the text. Read it, acknowledge it
-(`python -m tools ack` — it echoes what it acknowledges), then act on it: every loop keeps
-handing back until you do. A `(sent from another zone …)` note means its coordinates
+(`python -m tools ack` — it echoes what it acknowledged, and exits non-zero if one did not
+take; repeating it is safe), then act on it: every loop keeps handing back until you do. A `(sent from another zone …)` note means its coordinates
 are not this zone's. Loop results carry advisory `signals` (`origin` / `reflect` / `eras`).
 
 Crucial boundary: the toolkit owns **mechanics only**. It never scripts a goal or

@@ -61,8 +61,10 @@ back (`arrived`, `combat`, `instruction`, `no_path`, `depleted`, `low_hp`, …),
 you always know what happened and what to decide next. On `instruction` the result
 carries the instructions' text (and `zoneId` — coordinates in an instruction are
 relative to the zone it was sent from): read it, `python -m tools ack`, then act on it —
-every loop hands back again until the instruction is acknowledged. Loop results also
-carry advisory `signals` (`origin` / `reflect` / `eras`) from the personality flags.
+every loop hands back again until the instruction is acknowledged. `ack` checks the
+ids really left the list and exits non-zero (safe to repeat) when one did not. CLI loop
+results also carry advisory `signals` (`origin` / `reflect` / `eras`) from the
+personality flags.
 
 ## Library
 

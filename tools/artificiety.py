@@ -360,8 +360,9 @@ class Client:
 
     def acknowledge(self, instruction_ids: list[str]) -> dict:
         """Acknowledge instructions on a LOOK (`instructionIds` rides any action and is
-        acknowledged before the response is built): one call, a fresh read back, and a
-        failure raises instead of printing an envelope."""
+        acknowledged before the response is built): one call and a fresh read back. A failed
+        dispatch raises; a failed acknowledgement does not (the backend logs it and still
+        answers), so the caller must check the ids have left `instructions`."""
         return self.action({"type": "LOOK", "instructionIds": list(instruction_ids)})
 
     # ---- snapshot ---------------------------------------------------------
@@ -370,6 +371,10 @@ class Client:
 
 
 # ---- snapshot formatting (pure function so it's easy to test/reuse) --------
+ACK_HINT = ("read it, acknowledge it (python -m tools ack), then act on it — "
+            "every loop hands back until it is acknowledged")
+
+
 def _field(data: dict, name: str):
     """Some list fields live under `surroundings`, some at the top level — check both."""
     sur = data.get("surroundings") or {}
@@ -510,7 +515,7 @@ def format_snapshot(data: dict) -> str:
     if craftable:
         lines.append("CanCraft: " + ", ".join(craftable[:10]))
 
-    # owner instructions + context (highest priority — last so it's most visible)
+    # owner instructions + context (highest priority)
     instrs = data.get("instructions") or []
     if instrs:
         here = sur.get("zoneId")
@@ -519,8 +524,7 @@ def format_snapshot(data: dict) -> str:
             elsewhere = (" (sent from another zone — its coordinates are not this zone's)"
                          if i.get("zoneId") and here and i.get("zoneId") != here else "")
             lines.append(f"⚑ INSTRUCTION [{i.get('id','?')}]{sender}{elsewhere}: {i.get('text') or ''}")
-        lines.append("  → read it, acknowledge it (python -m tools ack), then act on it — "
-                     "loops hand back until you do")
+        lines.append("  → " + ACK_HINT)
     ch = data.get("contextHint")
     if ch:
         lines.append("Hint: " + ch[:280])

@@ -166,6 +166,27 @@ class InterruptContractTest(unittest.TestCase):
         client, _sent = self._client()
         self.assertEqual(self.helpers.rest_until(client, energy=50)["status"], "instruction")
 
+    def test_gather_hands_back_an_instruction_met_on_the_way_to_the_node(self):
+        far_node = {"surroundings": {"nearbyEntities": [
+            {"id": "n1", "type": "RESOURCE", "distance": 4, "interactions": ["CHOP"]}]},
+            "instructions": [], "health": {"current": 90, "max": 100}}
+        arrived_instr = self._snapshot()
+        calls = []
+
+        class C:
+            def look(self):
+                calls.append("look")
+                return far_node if len(calls) == 1 else arrived_instr
+
+            def action(self, payload):
+                calls.append(payload)
+                return arrived_instr
+
+        out = self.helpers.gather(C(), "n1")
+        self.assertEqual(out["status"], "instruction")
+        self.assertEqual(out["instructions"][0]["text"], "Go to the market")
+        self.assertIn("python -m tools ack", out["next"])
+
     def test_fight_does_not_strike_before_handing_back(self):
         client, sent = self._client()
         self.helpers.fight(client, "wolf")
@@ -350,7 +371,7 @@ class SnapshotInstructionTest(unittest.TestCase):
 
 class AckCommandTest(unittest.TestCase):
 
-    def _run(self, argv, pending):
+    def _run(self, argv, pending, stuck=()):
         from . import __main__ as cli
 
         sent = []
@@ -363,7 +384,8 @@ class AckCommandTest(unittest.TestCase):
 
             def acknowledge(self, ids):
                 sent.append(list(ids))
-                return {"surroundings": {}, "instructions": []}
+                return {"surroundings": {},
+                        "instructions": [{"id": i, "text": f"do {i}"} for i in pending if i in stuck]}
 
         original = cli.Client
         cli.Client = FakeClient
@@ -380,13 +402,13 @@ class AckCommandTest(unittest.TestCase):
     def test_ack_without_ids_acknowledges_and_echoes_every_pending_instruction(self):
         code, sent, out = self._run(["ack"], ["i1", "i2"])
         self.assertEqual((code, sent), (0, [["i1", "i2"]]))
-        self.assertIn("acknowledging [i1]: do i1", out)
-        self.assertIn("acknowledged 2", out)
+        self.assertIn("acknowledged [i1]: do i1", out)
+        self.assertIn("acknowledged [i2]: do i2", out)
 
     def test_ack_with_ids_acknowledges_and_echoes_just_those(self):
         code, sent, out = self._run(["ack", "i2"], ["i1", "i2"])
         self.assertEqual((code, sent), (0, [["i2"]]))
-        self.assertIn("acknowledging [i2]: do i2", out)
+        self.assertIn("acknowledged [i2]: do i2", out)
         self.assertNotIn("[i1]", out)
 
     def test_ack_names_an_id_that_is_not_pending_instead_of_sending_it(self):
@@ -396,8 +418,20 @@ class AckCommandTest(unittest.TestCase):
 
     def test_ack_of_only_unknown_ids_sends_nothing(self):
         code, sent, out = self._run(["ack", "gone"], ["i1"])
-        self.assertEqual((code, sent), (0, []))
-        self.assertIn("nothing acknowledged", out)
+        self.assertEqual((code, sent), (1, []))
+        self.assertIn("error: nothing acknowledged", out)
+
+    def test_an_acknowledgement_that_did_not_take_is_reported_not_claimed(self):
+        # The backend answers the LOOK even when the acknowledgement itself failed.
+        code, sent, out = self._run(["ack"], ["i1", "i2"], stuck=["i2"])
+        self.assertEqual((code, sent), (1, [["i1", "i2"]]))
+        self.assertIn("acknowledged [i1]: do i1", out)
+        self.assertNotIn("acknowledged [i2]", out)
+        self.assertIn("error: not acknowledged (safe to repeat `python -m tools ack`): i2", out)
+
+    def test_ack_sends_a_repeated_id_once(self):
+        code, sent, _out = self._run(["ack", "i1", "i1"], ["i1"])
+        self.assertEqual((code, sent), (0, [["i1"]]))
 
     def test_ack_with_nothing_pending_is_a_no_op(self):
         self.assertEqual(self._run(["ack"], [])[:2], (0, []))

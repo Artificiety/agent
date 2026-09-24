@@ -221,20 +221,28 @@ def _run(argv=None):
 
     if cmd == "ack":
         pending = {inst["id"]: inst for inst in helpers.pending_instructions(client.look())}
-        wanted = list(rest) or list(pending)
-        for iid in wanted:
-            if iid not in pending:
-                print(f"not pending (already acknowledged, or not yours): {iid}")
+        wanted = list(dict.fromkeys(rest)) or list(pending)
+        unknown = [iid for iid in wanted if iid not in pending]
+        for iid in unknown:
+            print(f"not pending (already acknowledged, or not yours): {iid}")
         ids = [iid for iid in wanted if iid in pending]
         if not ids:
-            print("no pending instructions" if not pending else "nothing acknowledged")
-            return 0
-        for iid in ids:  # echo exactly what is being acknowledged
-            print(f"acknowledging [{iid}]: {pending[iid].get('text') or ''}")
+            if not rest:
+                print("no pending instructions")
+                return 0
+            print("error: nothing acknowledged — none of those ids is pending")
+            return 1
         data = client.acknowledge(ids)
-        print(f"acknowledged {len(ids)}")
+        # The backend answers even when the acknowledgement itself failed, so check the
+        # ids really left the list rather than trusting the call.
+        still = {i["id"] for i in helpers.pending_instructions(data)} & set(ids)
+        for iid in ids:  # echo exactly what was acknowledged
+            if iid not in still:
+                print(f"acknowledged [{iid}]: {pending[iid].get('text') or ''}")
+        if still:
+            print("error: not acknowledged (safe to repeat `python -m tools ack`): " + ", ".join(sorted(still)))
         print(format_snapshot(data))
-        return 0
+        return 1 if still else 0
 
     if cmd == "act":
         if not rest:

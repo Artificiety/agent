@@ -21,6 +21,8 @@ from __future__ import annotations
 import sys
 import time
 
+from .artificiety import ACK_HINT
+
 TICK_SECONDS = 3.0
 
 _GATHER_INTERACTIONS = ("CHOP", "MINE", "FORAGE", "FISH")
@@ -30,24 +32,17 @@ def _progress(msg: str) -> None:
     print(msg, file=sys.stderr, flush=True)
 
 
-def pending_instruction_ids(data: dict) -> list[str]:
-    return [i.get("id") for i in (data.get("instructions") or []) if i.get("id")]
-
-
 def pending_instructions(data: dict) -> list[dict]:
-    """The pending owner instructions as {id, from, text} — the content, not just the ids,
+    """The pending owner instructions as {id, from, text, zoneId} — the content, not just the ids,
     so a loop that hands back on an instruction tells the caller what was asked."""
     return [{"id": i.get("id"), "from": i.get("from"), "text": i.get("text"), "zoneId": i.get("zoneId")}
             for i in (data.get("instructions") or []) if i.get("id")]
 
 
-ACK_HINT = ("read it, acknowledge it (python -m tools ack), then act on it — "
-            "every loop hands back until it is acknowledged")
-
-
 def signals(data: dict) -> list[str]:
-    """Standing calls to act the backend sends on every response — surfaced on every loop
-    result (advisory, never a hand-back) so an agent that only runs loops still sees them."""
+    """Standing calls to act the backend sends on every response. The CLI attaches them to
+    every loop result (advisory, never a hand-back) so an agent that only runs loops still
+    sees them; library callers read them off the response themselves."""
     out = []
     if data.get("personalityRegenerateRequested"):
         out.append("reflect" if data.get("personalityHint") else "origin")
@@ -324,6 +319,9 @@ def gather(client, node_id, interaction=None, until=None, approach=True,
 
     if approach and (node.get("distance") or 99) > 1:
         tr = travel_to(client, entity_id=node_id, stop_on_instruction=stop_on_instruction)
+        if tr["status"] == "instruction":
+            return {**{key: tr[key] for key in ("status", "instructions", "instructionIds", "next") if key in tr},
+                    "gained": {}}
         if tr["status"] != "arrived":
             return {"status": "approach_" + tr["status"], "travel": tr}
 
