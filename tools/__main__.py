@@ -236,7 +236,7 @@ def _dispatch(client: Client, cmd: str, rest: list[str]) -> int:
         if pos[0] != "private" and opts.get("--with"):
             raise _UsageError("--with is only for chat-history private — area and world read your zone / world")
         page = client.chat_history(pos[0], before=opts.get("--before"), with_id=opts.get("--with"))
-        print("\n".join(format_history_page(page)))
+        print("\n".join(format_history_page(page, own_id=getattr(client, "agent_id", None))))
         return 0
 
     if cmd == "ack":

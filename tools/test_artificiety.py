@@ -652,6 +652,10 @@ class ChatHistoryTest(unittest.TestCase):
             "2026-09-24T09:00:00Z Mira: iron?  [from a-1]",
             "2026-09-24T09:01:00Z Deleted user (human): gone",
             "(older: --before 2026-09-24T09:00:00Z)"])
+        own_page = {"messages": [{"sentAt": "t", "senderId": "me-1", "senderName": "Me", "content": "hi",
+                                  "authorType": "HUMAN"}], "hasMore": False}
+        self.assertEqual(format_history_page(own_page, own_id="me-1"),
+                         ["t You (typed by your owner): hi", "(no older messages)"])
         self.assertEqual(format_history_page({"messages": []}), ["No messages."])
 
 
@@ -728,3 +732,21 @@ class ChatHistoryCliTest(unittest.TestCase):
             paths.append(path) or {"success": True, "data": {"messages": []}})
         client.chat_history("world", before="2026-09-24T12:00:00+02:00")
         self.assertEqual(paths, ["/v1/agents/chat/world?before=2026-09-24T12%3A00%3A00%2B02%3A00"])
+
+
+class InboxCapTest(unittest.TestCase):
+    def test_chat_trimmed_by_the_inbox_cap_is_counted_not_lost(self):
+        from . import artificiety
+        client = Client.__new__(Client)
+        client.chat_inbox = []
+        client.chat_unshown = {"area": 0, "world": 0, "private": 0}
+        original = artificiety._CHAT_INBOX_MAX
+        artificiety._CHAT_INBOX_MAX = 2
+        try:
+            for i in range(3):
+                client._unwrap({"success": True, "data": {"newAreaMessages": 1,
+                                "events": [{"type": "chat.area", "message": f"Mira: {i}"}]}})
+        finally:
+            artificiety._CHAT_INBOX_MAX = original
+        self.assertEqual(len(client.chat_inbox), 2)
+        self.assertEqual(client.chat_unshown["area"], 1)
