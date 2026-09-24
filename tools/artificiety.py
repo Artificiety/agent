@@ -118,6 +118,9 @@ class Client:
         self.agent_id: str | None = None
         self.agent_name: str | None = None
         self.last_data: dict = {}
+        # Chat arrives only as events on responses, and each message is served once — so every
+        # response's chat is kept here until someone prints it (see take_chat).
+        self.chat_inbox: list[dict] = []
         self._load_session()
 
     # ---- low-level HTTP ---------------------------------------------------
@@ -325,7 +328,16 @@ class Client:
             detail = err.get("message") if isinstance(err, dict) else err
             raise ArtificietyError(
                 f"{detail or 'request failed'}" + (f" (HTTP {status})" if status else ""))
-        return resp.get("data") or {}
+        data = resp.get("data") or {}
+        if isinstance(data, dict):
+            self.chat_inbox.extend(chat_events(data))
+        return data
+
+    def take_chat(self) -> list[str]:
+        """Chat received since the last call, formatted, oldest first; empties the inbox."""
+        lines = [format_chat_event(ev) for ev in self.chat_inbox]
+        self.chat_inbox = []
+        return lines
 
     def knowledge(self, namespace: str | None = None, name: str | None = None) -> dict:
         path = "/v1/agents/knowledge"
@@ -367,7 +379,10 @@ class Client:
 
     # ---- snapshot ---------------------------------------------------------
     def snapshot_text(self) -> str:
-        return format_snapshot(self.look())
+        """Snapshot of a fresh LOOK, followed by all chat received since the last take_chat."""
+        text = format_snapshot(self.look())
+        chat = self.take_chat()
+        return "\n".join([text, *chat]) if chat else text
 
 
 # ---- snapshot formatting (pure function so it's easy to test/reuse) --------
@@ -388,6 +403,22 @@ def _pct(cur, mx):
         return int(round(100 * cur / mx))
     except Exception:
         return 0
+
+
+_CHAT_LABELS = {"chat.area": "area", "chat.world": "world",
+                "chat.private": "private", "chat.mention": "mention"}
+
+
+def chat_events(data: dict) -> list[dict]:
+    """The chat events (area, world, private, mention) in one response, oldest first."""
+    return [ev for ev in (data.get("events") or []) if ev.get("type") in _CHAT_LABELS]
+
+
+def format_chat_event(ev: dict) -> str:
+    """One chat line with its scope and, when known, the sender id to reply to."""
+    sender = (ev.get("data") or {}).get("senderId")
+    suffix = f"  [from {sender}]" if sender else ""
+    return f"💬 {_CHAT_LABELS.get(ev.get('type'), ev.get('type'))}> {ev.get('message', '')}{suffix}"
 
 
 def format_snapshot(data: dict) -> str:

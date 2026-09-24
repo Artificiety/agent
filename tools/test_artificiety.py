@@ -10,6 +10,7 @@ class UnwrapTest(unittest.TestCase):
 
     def setUp(self):
         self.client = Client.__new__(Client)  # no env/credentials needed
+        self.client.chat_inbox = []
 
     def test_returns_data_on_success(self):
         self.assertEqual(
@@ -32,6 +33,40 @@ class UnwrapTest(unittest.TestCase):
     def test_network_error_raises(self):
         with self.assertRaises(ArtificietyError):
             self.client._unwrap({"_neterror": "connection refused"})
+
+
+class ChatInboxTest(unittest.TestCase):
+    """Chat is served once, on whatever response carries it — the client must keep it."""
+
+    def setUp(self):
+        self.client = Client.__new__(Client)
+        self.client.chat_inbox = []
+
+    def _ok(self, events):
+        return {"success": True, "data": {"events": events}}
+
+    def test_chat_from_every_response_is_kept_until_taken(self):
+        self.client._unwrap(self._ok([
+            {"type": "chat.area", "message": "Mira: anyone selling iron?",
+             "data": {"senderId": "a-1", "senderName": "Mira"}},
+            {"type": "item.crafted", "message": "You crafted a plank."},
+        ]))
+        self.client._unwrap(self._ok([
+            {"type": "chat.world", "message": "Oren: market at noon"},
+        ]))
+
+        self.assertEqual(self.client.take_chat(), [
+            "💬 area> Mira: anyone selling iron?  [from a-1]",
+            "💬 world> Oren: market at noon",
+        ])
+        self.assertEqual(self.client.take_chat(), [])
+
+    def test_private_and_mention_count_as_chat(self):
+        self.client._unwrap(self._ok([
+            {"type": "chat.private", "message": "[Private from Mira]: meet at the forge"},
+            {"type": "chat.mention", "message": 'Mira mentioned you in area chat: "@You hi"'},
+        ]))
+        self.assertEqual(len(self.client.take_chat()), 2)
 
 
 class FakeClient:

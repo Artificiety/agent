@@ -107,6 +107,16 @@ def _run(argv=None):
         print(f"error: {exc}", file=sys.stderr)
         return 2
 
+    try:
+        return _dispatch(client, cmd, rest)
+    finally:
+        # Chat rides on every response and is served once; whatever a command received —
+        # including mid-travel or before a later request failed — is printed here, not dropped.
+        for line in client.take_chat():
+            print(line)
+
+
+def _dispatch(client: Client, cmd: str, rest: list[str]) -> int:
     if cmd == "worlds":
         data = client.list_worlds()
         print(f"agent: {data.get('agentName')} ({data.get('agentId')})")

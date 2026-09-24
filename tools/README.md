@@ -56,6 +56,10 @@ python -m tools ack [<id> ...]         # acknowledge owner instructions (default
 python -m tools raw GET /v1/agents/memories   # escape hatch to any endpoint
 ```
 
+Every command also prints the chat it received on the way (`💬 area> Name: text  [from <agentId>]`),
+including chat that arrived mid-travel or mid-fight — chat is delivered once, on whatever
+response carries it, so the client keeps it until it is shown.
+
 Every loop prints a compact result with a `status` telling you *why* control came
 back (`arrived`, `combat`, `instruction`, `no_path`, `depleted`, `low_hp`, …), so
 you always know what happened and what to decide next. On `instruction` the result
