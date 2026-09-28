@@ -567,6 +567,12 @@ def format_snapshot(data: dict) -> str:
         flags.append("resting")
     if en.get("meditating"):
         flags.append("meditating")
+    # below autoTravelMinimum the world refuses MOVE_TO/FOLLOW; exempt agents are never refused
+    if not data.get("needsExempt"):
+        for vital, key, fix in ((en, "energy", "REST"), (hu, "hunger", "eat")):
+            low = vital.get("autoTravelMinimum")
+            if low is not None and vital.get(key) is not None and vital[key] < low:
+                flags.append(f"NO-AUTO-TRAVEL({key}<{low}: MOVE or {fix})")
     if data.get("deathPenalty"):
         flags.append("DEATH-PENALTY")
     if data.get("poisoned"):
