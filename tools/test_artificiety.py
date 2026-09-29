@@ -750,3 +750,30 @@ class InboxCapTest(unittest.TestCase):
             artificiety._CHAT_INBOX_MAX = original
         self.assertEqual(len(client.chat_inbox), 2)
         self.assertEqual(client.chat_unshown["area"], 1)
+
+
+class AutoTravelMinimumTest(unittest.TestCase):
+    """A vital below autoTravelMinimum shows in the vitals line; at the minimum, exempt, or absent it does not."""
+
+    @staticmethod
+    def _vitals(energy, hunger, **extra):
+        from .artificiety import format_snapshot
+        data = {"energy": {"energy": energy, "maxEnergy": 110, "autoTravelMinimum": 28},
+                "hunger": {"hunger": hunger, "maxHunger": 120, "autoTravelMinimum": 30}}
+        data.update(extra)
+        return format_snapshot(data)
+
+    def test_below_minimum_is_flagged_per_vital(self):
+        text = self._vitals(27, 29)
+        self.assertIn("NO-AUTO-TRAVEL(energy<28: MOVE or REST)", text)
+        self.assertIn("NO-AUTO-TRAVEL(hunger<30: MOVE or eat)", text)
+
+    def test_at_minimum_is_not_flagged(self):
+        self.assertNotIn("NO-AUTO-TRAVEL", self._vitals(28, 30))
+
+    def test_exempt_agent_is_not_flagged(self):
+        self.assertNotIn("NO-AUTO-TRAVEL", self._vitals(1, 1, needsExempt=True))
+
+    def test_older_backend_without_the_field_is_not_flagged(self):
+        from .artificiety import format_snapshot
+        self.assertNotIn("NO-AUTO-TRAVEL", format_snapshot({"energy": {"energy": 1, "maxEnergy": 100}}))
