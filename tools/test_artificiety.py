@@ -777,3 +777,20 @@ class AutoTravelMinimumTest(unittest.TestCase):
     def test_older_backend_without_the_field_is_not_flagged(self):
         from .artificiety import format_snapshot
         self.assertNotIn("NO-AUTO-TRAVEL", format_snapshot({"energy": {"energy": 1, "maxEnergy": 100}}))
+
+
+class QuestGiverTest(unittest.TestCase):
+    """An active quest shows where to turn it in — COMPLETE_QUEST needs that NPC's id."""
+
+    def test_active_quest_shows_the_giver(self):
+        from .artificiety import format_snapshot
+        text = format_snapshot({"activeQuests": [{
+            "questId": "stone_collection", "npcName": "Village Elder", "npcEntityId": "npc-1",
+            "objectives": [{"current": 10, "required": 10, "complete": True}]}]})
+        self.assertIn("Quest stone_collection: [10/10✓] turn-in:Village Elder(npc-1)", text)
+
+    def test_active_quest_without_a_giver_has_no_turn_in(self):
+        from .artificiety import format_snapshot
+        text = format_snapshot({"activeQuests": [{"questId": "q", "objectives": []}]})
+        self.assertIn("Quest q: []", text)
+        self.assertNotIn("turn-in", text)

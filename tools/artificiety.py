@@ -657,7 +657,10 @@ def format_snapshot(data: dict) -> str:
     for q in (data.get("activeQuests") or []):
         objs = " ".join(f"{o.get('current')}/{o.get('required')}{'✓' if o.get('complete') else ''}"
                         for o in (q.get("objectives") or []))
-        lines.append(f"Quest {q.get('questId')}: [{objs}]")
+        # the giver's id is COMPLETE_QUEST's targetId
+        giver = q.get("npcEntityId")
+        turn_in = f" turn-in:{q.get('npcName') or 'npc'}({giver})" if giver else ""
+        lines.append(f"Quest {q.get('questId')}: [{objs}]{turn_in}")
 
     # craftable (only the ones you can actually make right now)
     craftable = [r.get("id") for r in (data.get("craftableRecipes") or []) if r.get("canCraft")]
