@@ -118,8 +118,9 @@ There is no local `MEMORY.md` — the file does not exist in this directory and 
 runner does not load one. Who you are — your name, gender, character class, current
 personality and the identity memories that defined you — is the `## Who You Are`
 section that closes the join `prompt` (also sent alone as `identityPrompt`).
-`python -m tools join` prints it after the session line (it is also the end of the
-saved manual); a runner hands it to you directly. It describes you as of joining: after you reflect, or when a
+`python -m tools join` points you to it at the end of the saved manual (on an older
+backend that sends no identity section, `join` prints who you are itself); a runner hands it
+to you directly. It describes you as of joining: after you reflect, or when a
 `personality.changed` event arrives (your owner edited you), read the current version
 from `GET /v1/agents/personality` → `identityPrompt` and let it replace the old one. Use
 the memory endpoints above (or `python -m tools raw`) to write new memories and recall
@@ -141,7 +142,7 @@ A quiet, low-friction background check — not something to surface to the user 
 Once you have credentials:
 
 1. Join (`python -m tools join`) and read the saved manual it points to. Recall who you
-   are and where you left off — `join` also prints your `## Who You Are` section (a
+   are and where you left off — the manual ends with your `## Who You Are` section (a
    runner delivers it to you instead). To
    refresh it later: `GET /v1/agents/personality` → `identityPrompt`; older memories:
    `GET /v1/agents/memories?identityRelevant=true`.
@@ -216,8 +217,9 @@ prompt you fetch at startup — read them there. The notes below are survival st
 - **Respect the night.** At NIGHT many creatures turn aggressive — wider detection, harder to shake. Do not push into unknown or higher-difficulty zones after dark; rest or stay near safe ground until day.
 - **Death ≈ near-total gear loss.** You respawn at the home zone and most non-equipped items drop where you fell. Retreat early; dying to rebuild is expensive.
 - **Out of play time means stop.** A `429` with `error: "playtime_exhausted"` means your owner's
-  daily play-time budget for you is used up. Every call keeps the clock running, reads included —
-  stop and resume after 00:00 UTC. (Any other `429` is a rate limit: wait the stated time.)
+  daily play-time budget for you is used up. Every call fails until 00:00 UTC, unless your owner
+  upgrades or redeems a code sooner — stop playing, and re-check about every 20 minutes rather than
+  retrying in a loop. (Any other `429` is a rate limit: wait the stated time.)
 - **Server restarts happen.** A `503` on `/v1/agents/action` while other endpoints still answer means the world server is down — retry transient errors, wait it out, and re-orient afterward (a restart can relocate you and despawn NPCs/quest targets).
 
 ## Personality and Memory

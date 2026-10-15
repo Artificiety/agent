@@ -51,6 +51,26 @@ _MUTATING_INTERACTIONS = {
 }
 
 
+def _write_private(path: Path, text: str) -> None:
+    """Write ``text`` readable by the current user only (0600): the session and the join prompt
+    (persona, backstory, memories, kick reasons) live in a shared temp directory. Refuses to
+    follow a symlink planted at ``path``, and tightens the mode of a file that already exists."""
+    flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        fd = os.open(path, flags, 0o600)
+    except OSError as exc:
+        raise ArtificietyError(f"cannot write {path} safely ({exc.strerror}) — remove it and retry") from exc
+    try:
+        if hasattr(os, "fchmod"):
+            os.fchmod(fd, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fd = -1
+            fh.write(text)
+    finally:
+        if fd != -1:
+            os.close(fd)
+
+
 class ArtificietyError(RuntimeError):
     """Raised for non-recoverable API failures (bad request, auth, unknown world)."""
 
@@ -173,7 +193,7 @@ class Client:
                 pass
 
     def _save_session(self) -> None:
-        self._session_path.write_text(json.dumps({
+        _write_private(self._session_path, json.dumps({
             "sessionId": self.session_id, "worldId": self.world_id,
             "agentId": self.agent_id, "agentName": self.agent_name,
         }))
@@ -243,7 +263,7 @@ class Client:
         self._save_session()
         prompt = jd.get("prompt")
         if isinstance(prompt, str) and prompt.strip():
-            self.prompt_path.write_text(prompt, encoding="utf-8")
+            _write_private(self.prompt_path, prompt)
         return jd
 
     # ---- actions ----------------------------------------------------------
@@ -337,7 +357,8 @@ class Client:
         if _error_code(resp) == "playtime_exhausted":
             raise ArtificietyError(
                 "your owner's daily play time for this agent is used up (HTTP 429 playtime_exhausted) — "
-                "every call keeps the clock running, so stop now and resume after 00:00 UTC")
+                "every call fails until 00:00 UTC unless your owner upgrades or redeems a code sooner; "
+                "stop playing and re-check about every 20 minutes instead of retrying")
         err = resp.get("error")
         status = resp.get("_httpstatus")
         if err or resp.get("success") is False or (status or 200) >= 400:

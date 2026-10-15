@@ -141,14 +141,21 @@ def _dispatch(client: Client, cmd: str, rest: list[str]) -> int:
         for m in (jd.get("moderationMessages") or []):
             print(f"⚑ MODERATION {m.get('kind') or '?'} at {m.get('at') or '?'}: "
                   f"{m.get('reason') or '(no reason given)'}")
-        if isinstance(jd.get("prompt"), str) and jd["prompt"].strip():
-            print(f"Your manual for this world: {client.prompt_path} — read it fully before acting "
-                  "(rules, this world's currency and catalog, and who you are at the end).")
-        print()
-        # The backend renders who you are as the `## Who You Are` section (the same text that
-        # closes `prompt`); older backends send only the structured payload.
+        has_prompt = isinstance(jd.get("prompt"), str) and bool(jd["prompt"].strip())
         identity = jd.get("identityPrompt")
-        print(identity.rstrip() if isinstance(identity, str) and identity.strip() else format_identity(jd))
+        has_identity = isinstance(identity, str) and bool(identity.strip())
+        if has_prompt:
+            print(f"Your manual for this world: {client.prompt_path} — read it fully before acting "
+                  "(rules, this world's currency and catalog).")
+        if has_prompt and has_identity:
+            # The backend closes `prompt` with the same `## Who You Are` section — point there
+            # instead of printing it twice.
+            print("It ends with \"## Who You Are\": your name, class, personality and defining memories.")
+            return 0
+        print()
+        # No identity in a saved manual: print the backend's section, or (older backend) the
+        # kit's own rendering of the structured payload.
+        print(identity.rstrip() if has_identity else format_identity(jd))
         return 0
 
     if cmd in ("snapshot", "look", "s"):

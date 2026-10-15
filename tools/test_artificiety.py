@@ -384,8 +384,9 @@ class PlaytimeExhaustedTest(unittest.TestCase):
                                     "error": {"error": "playtime_exhausted", "message": "Daily play time used."}})
         with self.assertRaises(ArtificietyError) as caught:
             client._unwrap(client._request("POST", "/v1/agents/action"))
-        self.assertIn("00:00 UTC", str(caught.exception))
-        self.assertIn("stop", str(caught.exception))
+        self.assertIn("every call fails until 00:00 UTC", str(caught.exception))
+        self.assertIn("re-check about every 20 minutes", str(caught.exception))
+        self.assertNotIn("clock running", str(caught.exception))
 
     def test_other_rate_limits_keep_the_server_message(self):
         client = _client_answering({"success": False, "_httpstatus": 429,
@@ -705,6 +706,27 @@ class ClientJoinPromptFileTest(unittest.TestCase):
         self.assertEqual(client.prompt_path.read_text(encoding="utf-8"),
                          "# Manual\n\n## Who You Are\nMira\n")
 
+    def test_prompt_and_session_files_are_readable_by_the_user_only(self):
+        import os
+        import stat
+        client = self._client({"prompt": "# Manual"})
+        client.prompt_path.write_text("old")  # a pre-existing file keeps no looser mode
+        os.chmod(client.prompt_path, 0o644)
+        client.join()
+        for path in (client.prompt_path, client._session_path):
+            self.assertEqual(stat.S_IMODE(os.stat(path).st_mode), 0o600, path)
+        self.assertEqual(client.prompt_path.read_text(encoding="utf-8"), "# Manual")
+
+    def test_a_symlink_at_the_prompt_path_is_not_followed(self):
+        import os
+        client = self._client({"prompt": "# Manual"})
+        target = client.prompt_path.parent / "elsewhere.txt"
+        target.write_text("untouched")
+        os.symlink(target, client.prompt_path)
+        with self.assertRaises(ArtificietyError):
+            client.join()
+        self.assertEqual(target.read_text(), "untouched")
+
     def test_join_without_a_prompt_writes_nothing(self):
         client = self._client({})
         client.join()
@@ -735,21 +757,28 @@ class JoinCommandTest(unittest.TestCase):
         self.assertEqual(code, 0)
         return out.getvalue()
 
-    def test_identity_prompt_is_printed_verbatim_and_only_once(self):
+    def test_identity_in_the_saved_manual_is_pointed_to_not_printed_again(self):
         text = self._join({**FormatIdentityTest.FULL, "identityPrompt": self.IDENTITY,
                            "prompt": "# Manual\n...\n\n" + self.IDENTITY})
         self.assertTrue(text.startswith("joined as Mira"))
-        self.assertIn(self.IDENTITY.rstrip(), text)
-        self.assertEqual(text.count("## Who You Are"), 1)
-        self.assertNotIn("## You Are", text)  # the kit's own rendering is not added on top
+        self.assertIn("Your manual for this world: /tmp/artificiety_prompt_test.md", text)
+        self.assertIn('It ends with "## Who You Are"', text)
+        self.assertNotIn("You are **Mira**", text)  # the section itself is not printed
+        self.assertNotIn("## You Are", text)       # nor the kit's own rendering
         self.assertNotIn("# Manual", text)
 
-    def test_points_to_the_saved_manual_when_the_join_carries_a_prompt(self):
+    def test_identity_prompt_is_printed_verbatim_when_there_is_no_manual(self):
+        text = self._join({**FormatIdentityTest.FULL, "identityPrompt": self.IDENTITY})
+        self.assertIn(self.IDENTITY.rstrip(), text)
+        self.assertEqual(text.count("## Who You Are"), 1)
+        self.assertNotIn("## You Are", text)
+        self.assertNotIn("Your manual for this world", text)
+
+    def test_a_manual_without_identity_section_gets_the_kit_rendering(self):
         text = self._join({**FormatIdentityTest.FULL, "prompt": "# Manual"})
         self.assertIn("Your manual for this world: /tmp/artificiety_prompt_test.md", text)
-        self.assertIn("who you are at the end", text)
-        no_prompt = self._join(FormatIdentityTest.FULL)
-        self.assertNotIn("Your manual for this world", no_prompt)
+        self.assertNotIn("It ends with", text)
+        self.assertIn("## You Are", text)
 
     def test_moderation_messages_are_printed(self):
         text = self._join({**FormatIdentityTest.FULL, "moderationMessages": [
