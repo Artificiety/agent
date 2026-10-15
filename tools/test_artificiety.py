@@ -719,10 +719,15 @@ class ClientJoinPromptFileTest(unittest.TestCase):
 
     def test_a_symlink_at_the_prompt_path_is_not_followed(self):
         import os
+        if not hasattr(os, "O_NOFOLLOW"):
+            self.skipTest("no O_NOFOLLOW on this platform")
         client = self._client({"prompt": "# Manual"})
         target = client.prompt_path.parent / "elsewhere.txt"
         target.write_text("untouched")
-        os.symlink(target, client.prompt_path)
+        try:
+            os.symlink(target, client.prompt_path)
+        except (OSError, NotImplementedError) as exc:
+            self.skipTest(f"cannot create a symlink here: {exc}")
         with self.assertRaises(ArtificietyError):
             client.join()
         self.assertEqual(target.read_text(), "untouched")
@@ -731,6 +736,81 @@ class ClientJoinPromptFileTest(unittest.TestCase):
         client = self._client({})
         client.join()
         self.assertFalse(client.prompt_path.exists())
+
+
+class PrivateFileTest(unittest.TestCase):
+    """The session and prompt files sit in a shared temp directory: only this user's own files
+    are written or read, and every refusal is an ArtificietyError, never a raw traceback."""
+
+    def setUp(self):
+        import tempfile
+        from pathlib import Path
+        self.dir = Path(tempfile.mkdtemp())
+        self.path = self.dir / "f.txt"
+
+    def _require_uids(self):
+        import os
+        if not hasattr(os, "getuid"):
+            self.skipTest("no POSIX uids on this platform")
+
+    def test_a_file_owned_by_another_user_is_not_written_or_truncated(self):
+        import os
+        from unittest import mock
+        from . import artificiety
+        self._require_uids()
+        self.path.write_text("theirs")
+        with mock.patch.object(artificiety.os, "getuid", return_value=os.getuid() + 1):
+            with self.assertRaises(ArtificietyError) as caught:
+                artificiety._write_private(self.path, "mine")
+        self.assertIn("belongs to another user", str(caught.exception))
+        self.assertEqual(self.path.read_text(), "theirs")
+
+    def test_a_failing_chmod_is_an_artificiety_error(self):
+        from unittest import mock
+        from . import artificiety
+        if not hasattr(artificiety.os, "fchmod"):
+            self.skipTest("no fchmod on this platform")
+        with mock.patch.object(artificiety.os, "fchmod", side_effect=PermissionError(1, "Operation not permitted")):
+            with self.assertRaises(ArtificietyError) as caught:
+                artificiety._write_private(self.path, "mine")
+        self.assertIn("cannot secure", str(caught.exception))
+
+    def test_without_posix_extras_the_write_is_best_effort(self):
+        from unittest import mock
+        from . import artificiety
+        fake_os = mock.MagicMock(wraps=artificiety.os)
+        fake_os.O_WRONLY, fake_os.O_CREAT = artificiety.os.O_WRONLY, artificiety.os.O_CREAT
+        del fake_os.O_NOFOLLOW, fake_os.fchmod, fake_os.getuid
+        with mock.patch.object(artificiety, "os", fake_os):
+            artificiety._write_private(self.path, "mine")
+        self.assertEqual(self.path.read_text(), "mine")
+
+    def test_reading_a_missing_file_is_none(self):
+        from . import artificiety
+        self.assertIsNone(artificiety._read_private(self.path))
+
+    def test_a_session_file_owned_by_another_user_is_refused(self):
+        import os
+        from unittest import mock
+        from . import artificiety
+        self._require_uids()
+        self.path.write_text('{"sessionId": "theirs"}')
+        client = Client.__new__(Client)
+        client.session_id = None
+        client._session_path = self.path
+        with mock.patch.object(artificiety.os, "getuid", return_value=os.getuid() + 1):
+            with self.assertRaises(ArtificietyError) as caught:
+                client._load_session()
+        self.assertIn("belongs to another user", str(caught.exception))
+        self.assertIsNone(client.session_id)
+
+    def test_own_session_file_is_loaded(self):
+        self.path.write_text('{"sessionId": "s-9", "worldId": "w-9"}')
+        client = Client.__new__(Client)
+        client.session_id = client.world_id = client.agent_id = client.agent_name = None
+        client._session_path = self.path
+        client._load_session()
+        self.assertEqual((client.session_id, client.world_id), ("s-9", "w-9"))
 
 
 class JoinCommandTest(unittest.TestCase):

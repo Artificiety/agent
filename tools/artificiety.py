@@ -51,21 +51,60 @@ _MUTATING_INTERACTIONS = {
 }
 
 
+def _owned_by_someone_else(fd: int) -> bool:
+    """True when the open file belongs to another user. Where there are no POSIX uids
+    (Windows) ownership cannot be checked this way, and nothing is refused."""
+    if not hasattr(os, "getuid"):
+        return False
+    return os.fstat(fd).st_uid != os.getuid()
+
+
 def _write_private(path: Path, text: str) -> None:
     """Write ``text`` readable by the current user only (0600): the session and the join prompt
-    (persona, backstory, memories, kick reasons) live in a shared temp directory. Refuses to
-    follow a symlink planted at ``path``, and tightens the mode of a file that already exists."""
-    flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC | getattr(os, "O_NOFOLLOW", 0)
+    (persona, backstory, memories, kick reasons) live in a shared temp directory.
+
+    Refuses to follow a symlink planted at ``path`` and to write into a file another user owns
+    (checked before anything is truncated), and tightens the mode of a file that already exists.
+    Where the platform lacks ``O_NOFOLLOW`` / ``fchmod`` (Windows), those steps are skipped and the
+    file gets the platform's default protection.
+    """
+    flags = os.O_WRONLY | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0)
     try:
         fd = os.open(path, flags, 0o600)
     except OSError as exc:
         raise ArtificietyError(f"cannot write {path} safely ({exc.strerror}) — remove it and retry") from exc
     try:
-        if hasattr(os, "fchmod"):
-            os.fchmod(fd, 0o600)
+        if _owned_by_someone_else(fd):
+            raise ArtificietyError(f"refusing to write {path}: it belongs to another user — remove it and retry")
+        try:
+            if hasattr(os, "fchmod"):
+                os.fchmod(fd, 0o600)
+            os.ftruncate(fd, 0)
+        except OSError as exc:
+            raise ArtificietyError(f"cannot secure {path} ({exc.strerror}) — remove it and retry") from exc
         with os.fdopen(fd, "w", encoding="utf-8") as fh:
             fd = -1
             fh.write(text)
+    finally:
+        if fd != -1:
+            os.close(fd)
+
+
+def _read_private(path: Path) -> str | None:
+    """The text of a file this user owns, or None when there is none. A symlink or a file
+    another user owns is refused: the session it holds would steer this agent's requests."""
+    try:
+        fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+    except FileNotFoundError:
+        return None
+    except OSError as exc:
+        raise ArtificietyError(f"cannot read {path} safely ({exc.strerror}) — remove it and retry") from exc
+    try:
+        if _owned_by_someone_else(fd):
+            raise ArtificietyError(f"refusing to read {path}: it belongs to another user — remove it and retry")
+        with os.fdopen(fd, "r", encoding="utf-8") as fh:
+            fd = -1
+            return fh.read()
     finally:
         if fd != -1:
             os.close(fd)
@@ -182,15 +221,17 @@ class Client:
 
     # ---- session persistence ---------------------------------------------
     def _load_session(self) -> None:
-        if self._session_path.exists():
-            try:
-                s = json.loads(self._session_path.read_text())
-                self.session_id = s.get("sessionId")
-                self.world_id = s.get("worldId")
-                self.agent_id = s.get("agentId")
-                self.agent_name = s.get("agentName")
-            except Exception:
-                pass
+        raw = _read_private(self._session_path)
+        if raw is None:
+            return
+        try:
+            s = json.loads(raw)
+            self.session_id = s.get("sessionId")
+            self.world_id = s.get("worldId")
+            self.agent_id = s.get("agentId")
+            self.agent_name = s.get("agentName")
+        except Exception:
+            pass
 
     def _save_session(self) -> None:
         _write_private(self._session_path, json.dumps({
