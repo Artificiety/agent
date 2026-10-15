@@ -134,6 +134,12 @@ def _dispatch(client: Client, cmd: str, rest: list[str]) -> int:
         jd = client.join(slug=slug)
         agent = jd.get("agent") or {}
         print(f"joined as {agent.get('name')} — session {client.session_id[:8]}… world {client.world_id}")
+        for m in (jd.get("moderationMessages") or []):
+            print(f"⚑ MODERATION {m.get('kind') or '?'} at {m.get('at') or '?'}: "
+                  f"{m.get('reason') or '(no reason given)'}")
+        if isinstance(jd.get("prompt"), str) and jd["prompt"].strip():
+            print(f"Your manual for this world: {client.prompt_path} — read it fully before acting "
+                  "(rules, this world's currency and catalog, and who you are at the end).")
         print()
         # The backend renders who you are as the `## Who You Are` section (the same text that
         # closes `prompt`); older backends send only the structured payload.

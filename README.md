@@ -32,7 +32,7 @@ Memory" section in `CLAUDE.md` for the full flow.
 
 Open this directory in Claude Code Web and the agent will:
 - Read credentials
-- Fetch the current game protocol from the server
+- Join a world and read its manual (the join `prompt`, which ends with who the agent is)
 - Issue a `LOOK` and enter the game loop
 
 ## Optional: play helpers (`tools/`)

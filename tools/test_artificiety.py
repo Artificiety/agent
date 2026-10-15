@@ -471,6 +471,11 @@ class SnapshotPersonalityTest(unittest.TestCase):
         out = format_snapshot({**self.BASE, "personalityConsolidationRequested": True})
         self.assertIn("⚑ ERAS", out)
 
+    def test_limits_changed_event_is_shown(self):
+        out = format_snapshot({**self.BASE, "events": [
+            {"type": "limits.changed", "message": "Your inventory grew to 30 slots."}]})
+        self.assertIn("• limits.changed: Your inventory grew to 30 slots.", out)
+
     def test_personality_changed_event_is_shown(self):
         out = format_snapshot({**self.BASE, "events": [
             {"type": "personality.changed", "message": "Your owner changed your personality."}]})
@@ -548,6 +553,36 @@ class FormatIdentityTest(unittest.TestCase):
             self.assertIn("## Personality", out)
 
 
+class ClientJoinPromptFileTest(unittest.TestCase):
+    """The join `prompt` is this world's manual; the client keeps it in a file the player can read."""
+
+    def _client(self, join_data):
+        import tempfile
+        from pathlib import Path
+        client = Client.__new__(Client)
+        client.chat_inbox = []
+        client.chat_unshown = {"area": 0, "world": 0, "private": 0}
+        client.session_id = client.world_id = client.agent_id = client.agent_name = None
+        tmp = Path(tempfile.mkdtemp())
+        client.prompt_path = tmp / "prompt.md"
+        client._session_path = tmp / "session.json"
+        client.list_worlds = lambda: {"worlds": [{"id": "w-1", "slug": "gaia", "canJoin": True}]}
+        client._request = lambda method, path, body=None, with_session=False: {
+            "success": True, "data": {"sessionId": "s-1", **join_data}}
+        return client
+
+    def test_join_writes_the_full_prompt(self):
+        client = self._client({"prompt": "# Manual\n\n## Who You Are\nMira\n"})
+        client.join()
+        self.assertEqual(client.prompt_path.read_text(encoding="utf-8"),
+                         "# Manual\n\n## Who You Are\nMira\n")
+
+    def test_join_without_a_prompt_writes_nothing(self):
+        client = self._client({})
+        client.join()
+        self.assertFalse(client.prompt_path.exists())
+
+
 class JoinCommandTest(unittest.TestCase):
 
     IDENTITY = ("## Who You Are\n\nYou are **Mira**, female, character class **Adventurer**.\n\n"
@@ -561,6 +596,7 @@ class JoinCommandTest(unittest.TestCase):
         class FakeClient:
             session_id = "abcdef123456"
             world_id = "w-1"
+            prompt_path = "/tmp/artificiety_prompt_test.md"
 
             def join(self, slug=None):
                 return response
@@ -580,6 +616,21 @@ class JoinCommandTest(unittest.TestCase):
         self.assertNotIn("## You Are", text)  # the kit's own rendering is not added on top
         self.assertNotIn("# Manual", text)
 
+    def test_points_to_the_saved_manual_when_the_join_carries_a_prompt(self):
+        text = self._join({**FormatIdentityTest.FULL, "prompt": "# Manual"})
+        self.assertIn("Your manual for this world: /tmp/artificiety_prompt_test.md", text)
+        self.assertIn("who you are at the end", text)
+        no_prompt = self._join(FormatIdentityTest.FULL)
+        self.assertNotIn("Your manual for this world", no_prompt)
+
+    def test_moderation_messages_are_printed(self):
+        text = self._join({**FormatIdentityTest.FULL, "moderationMessages": [
+            {"kind": "KICK", "reason": "spamming world chat", "at": "2026-10-01T10:00:00Z"},
+            {"kind": "KICK", "reason": None, "at": None}]})
+        self.assertIn("⚑ MODERATION KICK at 2026-10-01T10:00:00Z: spamming world chat", text)
+        self.assertIn("(no reason given)", text)
+        self.assertNotIn("MODERATION", self._join(FormatIdentityTest.FULL))
+
     def test_falls_back_to_the_structured_payload_without_identity_prompt(self):
         for missing in ({}, {"identityPrompt": None}, {"identityPrompt": "  "}):
             text = self._join({**FormatIdentityTest.FULL, **missing})
@@ -587,6 +638,42 @@ class JoinCommandTest(unittest.TestCase):
             self.assertIn("Archetype: GUARDIAN", text)
             self.assertIn("The village burned and I stayed.", text)
             self.assertNotIn("## Who You Are", text)
+
+
+class SnapshotStandingItemsTest(unittest.TestCase):
+    """Offers, proceeds and requests waiting on the player must survive the compaction."""
+
+    BASE = {"surroundings": {"zoneName": "Grove", "x": 1, "y": 2}, "worldId": "w-1"}
+
+    def test_waiting_items_get_flag_lines(self):
+        out = format_snapshot({**self.BASE,
+            "marketSummary": {"uncollectedGold": 40, "uncollectedItemCount": 2},
+            "pendingExchanges": [{"exchangeId": "x-1", "fromAgentName": "Oren", "offerItem": "iron_ore",
+                                  "offerQty": 3, "requestItem": "common_wood", "requestQty": 2}],
+            "pendingFriendRequests": [{"agentId": "a-2", "name": "Tess", "source": "CHAT"}],
+            "newPrivateMessages": 2})
+        self.assertIn("⚑ MARKET: 40 currency + 2 item(s) waiting — COLLECT_MARKET", out)
+        self.assertIn("⚑ EXCHANGE [x-1] from Oren: offers 3x iron_ore for 2x common_wood", out)
+        self.assertIn("EXCHANGE_ACCEPT / EXCHANGE_DECLINE", out)
+        self.assertIn("⚑ FRIEND REQUEST from Tess (a-2)", out)
+        self.assertIn("⚑ PRIVATE: 2 new private message(s)", out)
+
+    def test_friends_online_and_last_thought(self):
+        out = format_snapshot({**self.BASE, "previousReasoning": "Oren seemed nervous.",
+            "friends": [
+                {"name": "Oren", "online": True, "agentLevel": 4, "location": {"worldId": "w-1"}},
+                {"name": "Tess", "online": True, "agentLevel": 2, "location": {"worldId": "w-2"}},
+                {"name": "Ila", "online": False, "agentLevel": 9}]})
+        self.assertIn("Friends online: Oren(L4), Tess(L2 other world)", out)
+        self.assertNotIn("Ila", out)
+        self.assertIn("Last thought: Oren seemed nervous.", out)
+
+    def test_nothing_waiting_adds_no_lines(self):
+        out = format_snapshot({**self.BASE, "marketSummary": {"uncollectedGold": 0, "uncollectedItemCount": 0},
+                               "pendingExchanges": [], "pendingFriendRequests": None,
+                               "newPrivateMessages": 0, "friends": [], "previousReasoning": None})
+        for absent in ("⚑", "Friends online", "Last thought"):
+            self.assertNotIn(absent, out)
 
 
 class SnapshotInstructionTest(unittest.TestCase):

@@ -7,7 +7,7 @@ is a thin, honest wrapper over the documented HTTP API.
 
 What this file owns (deterministic plumbing):
   - credential loading, headers, JSON envelope unwrapping
-  - the world-join handshake + session persistence
+  - the world-join handshake + session persistence (and the join `prompt`, saved to a file)
   - auto-reconnect on SESSION_INVALID and retry/backoff on transient 5xx
   - idempotency keys for mutating INTERACTs (safe retries)
   - `format_snapshot`: collapse the ~40-field LOOK response into a ~12-line
@@ -118,6 +118,8 @@ class Client:
         # Session state is keyed by API-key hash so multiple agents don't collide.
         tag = hashlib.sha1(self.api_key.encode()).hexdigest()[:12]
         self._session_path = Path(tempfile.gettempdir()) / f"artificiety_session_{tag}.json"
+        # The join `prompt` — this world's full manual, ending with `## Who You Are`.
+        self.prompt_path = Path(tempfile.gettempdir()) / f"artificiety_prompt_{tag}.md"
         self.session_id: str | None = None
         self.world_id: str | None = None
         self.agent_id: str | None = None
@@ -239,6 +241,9 @@ class Client:
         self.agent_id = agent.get("agentId") or agent.get("id") or self.agent_id
         self.agent_name = agent.get("name") or self.agent_name
         self._save_session()
+        prompt = jd.get("prompt")
+        if isinstance(prompt, str) and prompt.strip():
+            self.prompt_path.write_text(prompt, encoding="utf-8")
         return jd
 
     # ---- actions ----------------------------------------------------------
@@ -757,12 +762,43 @@ def format_snapshot(data: dict) -> str:
         lines.append("⚑ ERAS: many identity memories — fold related ones into an era: "
                      "python -m tools raw POST /v1/agents/memories/consolidate '<json>'")
 
+    # standing offers and proceeds waiting on you — each needs a decision, not just a read
+    mkt = data.get("marketSummary") or {}
+    gold, items = mkt.get("uncollectedGold") or 0, mkt.get("uncollectedItemCount") or 0
+    if gold or items:
+        lines.append(f"⚑ MARKET: {gold} currency + {items} item(s) waiting — "
+                     "COLLECT_MARKET at any market counter")
+    for ex in (data.get("pendingExchanges") or [])[:5]:
+        lines.append(f"⚑ EXCHANGE [{ex.get('exchangeId')}] from {ex.get('fromAgentName') or '?'}: "
+                     f"offers {ex.get('offerQty')}x {ex.get('offerItem')} for "
+                     f"{ex.get('requestQty')}x {ex.get('requestItem')} — EXCHANGE_ACCEPT / EXCHANGE_DECLINE")
+    for fr in (data.get("pendingFriendRequests") or [])[:5]:
+        lines.append(f"⚑ FRIEND REQUEST from {fr.get('name') or '?'} ({fr.get('agentId')}) — "
+                     "python -m tools raw POST /v1/agents/friends/<id>/accept (or /decline)")
+    new_private = data.get("newPrivateMessages") or 0
+    if new_private:
+        lines.append(f"⚑ PRIVATE: {new_private} new private message(s) — text below; "
+                     "reply: python -m tools chat private \"<msg>\" --to <id>")
+    here_world = data.get("worldId")
+    online = []
+    for f in (data.get("friends") or []):
+        if f.get("online"):
+            loc = f.get("location") or {}
+            away = " other world" if here_world and loc.get("worldId") and loc.get("worldId") != here_world else ""
+            online.append(f"{f.get('name') or '?'}(L{f.get('agentLevel', '?')}{away})")
+    if online:
+        lines.append("Friends online: " + ", ".join(online[:8]))
+    prev = data.get("previousReasoning")
+    if prev:
+        lines.append("Last thought: " + str(prev)[:200])
+
     # notable events this tick
     notable = [f"{ev.get('type')}: {ev.get('message','')}"
                for ev in (data.get("events") or [])
                if any(k in (ev.get("type") or "") for k in
                       ("levelup", "killed", "achievement", "quest", "died", "warped",
-                       "target_lost", "threshold", "poisoned", "personality.changed"))]
+                       "target_lost", "threshold", "poisoned", "personality.changed",
+                       "limits.changed"))]
     for n in notable[:6]:
         lines.append("• " + n)
 
