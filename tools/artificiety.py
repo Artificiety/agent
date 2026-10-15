@@ -12,6 +12,8 @@ What this file owns (deterministic plumbing):
   - idempotency keys for mutating INTERACTs (safe retries)
   - `format_snapshot`: collapse the ~40-field LOOK response into a ~12-line
     situational read, so a tick costs ~150 tokens instead of ~4000.
+  - `format_identity`: render the join response's character, personality and
+    identity memories, which a runner would otherwise hand to its model.
 
 What this file does NOT own: any decision about what to do. That stays with the
 player, tick by tick — see the repo CLAUDE.md.
@@ -531,6 +533,62 @@ def format_chat_event(ev: dict) -> str:
     sender = data.get("senderId")
     suffix = f"  [from {sender}]" if sender and not data.get("own") else ""
     return f"💬 {_CHAT_LABELS.get(ev.get('type'), ev.get('type'))}{human}> {ev.get('message', '')}{suffix}"
+
+
+def format_identity(join_data: dict) -> str:
+    """Who you are, from the join response's `agent` and `personality` payload.
+
+    A runner hands this payload to its model; a kit-driven player only sees what `join`
+    prints, so it is rendered in full. Every field is optional — a brand-new agent has no
+    personality yet, and older backends omit `characterName`.
+    """
+    jd = join_data if isinstance(join_data, dict) else {}
+    agent = jd.get("agent") or {}
+    pers = jd.get("personality") or {}
+    cur = pers.get("current") or {}
+    lines = ["## You Are"]
+    lines.append(f"Name: {agent.get('name') or '?'}")
+    if agent.get("gender"):
+        lines.append(f"Gender: {agent['gender']}")
+    character = agent.get("characterName") or agent.get("characterId")
+    if character:
+        lines.append(f"Character: {character}")
+
+    lines.append("")
+    lines.append("## Personality")
+    fields = [("Name", cur.get("name")), ("Archetype", cur.get("archetype")),
+              ("Traits", ", ".join(str(t) for t in (cur.get("traits") or [])) or None),
+              ("Ambition", cur.get("ambition")), ("Backstory", cur.get("backstory")),
+              ("Hint", cur.get("hint"))]
+    shown = [f"{label}: {value}" for label, value in fields if value]
+    lines.extend(shown or ["(none yet — form it with your Origin reflection)"])
+
+    memories = pers.get("identityMemories") or []
+    if memories:
+        lines.append("")
+        lines.append("## Identity Memories")
+        for mem in memories:
+            if not isinstance(mem, dict):
+                continue
+            emotions = ", ".join(str(e) for e in (mem.get("emotions") or []))
+            title = mem.get("title") or "(untitled)"
+            when = mem.get("createdAt")
+            head = f"- {title}" + (f" ({when})" if when else "") + (f" [{emotions}]" if emotions else "")
+            lines.append(head)
+            if mem.get("content"):
+                lines.append(f"  {mem['content']}")
+
+    overview = pers.get("memoryOverview") or []
+    if overview:
+        lines.append("")
+        lines.append("## Older Identity Memories (GET /v1/agents/memories/<id> for the full text)")
+        for entry in overview:
+            if not isinstance(entry, dict):
+                continue
+            era = " [era]" if entry.get("isEra") else ""
+            lines.append(f"- {entry.get('title') or '(untitled)'}{era}  {entry.get('memoryId') or ''}".rstrip())
+
+    return "\n".join(lines)
 
 
 def format_snapshot(data: dict) -> str:

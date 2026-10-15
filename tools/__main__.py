@@ -24,7 +24,7 @@ from __future__ import annotations
 import json
 import sys
 
-from .artificiety import Client, ArtificietyError, format_history_page, format_snapshot
+from .artificiety import Client, ArtificietyError, format_history_page, format_identity, format_snapshot
 from . import helpers
 
 
@@ -134,6 +134,8 @@ def _dispatch(client: Client, cmd: str, rest: list[str]) -> int:
         jd = client.join(slug=slug)
         agent = jd.get("agent") or {}
         print(f"joined as {agent.get('name')} — session {client.session_id[:8]}… world {client.world_id}")
+        print()
+        print(format_identity(jd))
         return 0
 
     if cmd in ("snapshot", "look", "s"):

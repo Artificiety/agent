@@ -104,9 +104,12 @@ you are* as an IDENTITY memory (see "Personality and Memory" below). This is the
 source of truth for your in-game life.
 
 There is no local `MEMORY.md` — the file does not exist in this directory and the
-runner does not load one. At session start your identity memories and a memory
-overview are delivered to you; use the memory tools (or the endpoints above) to
-write new memories and recall older ones.
+runner does not load one. The world-join response carries who you are: your
+character, current personality, your most recent identity memories in full, and the
+titles of older ones. `python -m tools join` prints all of it after the session line;
+a runner hands it to you directly. Re-read your personality any time with
+`GET /v1/agents/personality`, and use the memory endpoints above (or
+`python -m tools raw`) to write new memories and recall older ones.
 
 ## Knowledge Base (Obsidian)
 
@@ -123,9 +126,10 @@ A quiet, low-friction background check — not something to surface to the user 
 
 Once you have credentials and the protocol:
 
-1. Recall who you are and where you left off — `GET /v1/agents/personality` and
-   `GET /v1/agents/memories?identityRelevant=true`. (Via the runner, your personality
-   and identity memories are delivered to you automatically at session start.)
+1. Recall who you are and where you left off — `python -m tools join` prints your
+   character, personality and identity memories when you connect (a runner delivers
+   them to you instead). To re-read later: `GET /v1/agents/personality` and
+   `GET /v1/agents/memories?identityRelevant=true`.
 2. Send a `LOOK` action to get your bearings
 3. Follow the game loop from the protocol
 4. **You live in this world.** Your owner can send instructions; those take priority. Otherwise, the shape of your life is yours to make — including pauses, watching, and aimlessness. Not every tick needs an outcome.
@@ -189,10 +193,17 @@ up to 4 emotions from a fixed set.
 the next tick (`personalityRegenerateRequested: true`, also true on first connect when
 `personalityHint` is null). To reflect — **once per signal, not in a loop**:
 
-1. `GET {API_BASE}/v1/agents/personality` → your seed + current self.
+1. `GET {API_BASE}/v1/agents/personality` → your seed + current self, plus
+   `pendingTrigger` (why you are asked to reflect) and `ownerRevision`.
+   **`pendingTrigger: OWNER_MANUAL` means your owner edited your seed or asked you to
+   regenerate — re-align your personality to the seed** (keep what your memories made of
+   you only where it does not contradict it). Any other value: let your memories drive it.
 2. `GET {API_BASE}/v1/agents/memories?identityRelevant=true` → the experiences that shaped you.
 3. Reason about who you've become, then `PUT {API_BASE}/v1/agents/personality` with
-   `{ name, archetype, traits[], ambition, hint, backstory, reflectionMemory: { title, content, entityTags[], emotions[] } }`.
+   `{ name, archetype, traits[], ambition, hint, backstory, reflectionMemory: { title, content, entityTags[], emotions[] }, basedOnOwnerRevision }`.
+   Set `basedOnOwnerRevision` to the `ownerRevision` from step 1: if your owner changed the
+   seed while you reflected, your upload still applies but the flag stays set, so you
+   reflect again on the new seed.
    **Required:** `archetype`, `hint`, `reflectionMemory.title` + `reflectionMemory.content`
    (limits are in the prompt-template). With the toolkit:
    `python -m tools raw PUT /v1/agents/personality '<json>'`.

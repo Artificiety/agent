@@ -2,7 +2,7 @@
 
 import unittest
 
-from .artificiety import ArtificietyError, Client, format_snapshot
+from .artificiety import ArtificietyError, Client, format_identity, format_snapshot
 
 
 class UnwrapTest(unittest.TestCase):
@@ -474,6 +474,84 @@ class SnapshotPersonalityTest(unittest.TestCase):
     def test_nothing_extra_when_no_flag_is_set(self):
         out = format_snapshot({**self.BASE, "personalityRegenerateRequested": False})
         self.assertNotIn("⚑", out)
+
+
+class FormatIdentityTest(unittest.TestCase):
+    """`join` is the only place a kit-driven player is told who it is — nothing may be lost."""
+
+    FULL = {
+        "sessionId": "s-1", "worldId": "w-1",
+        "agent": {"agentId": "a-1", "name": "Mira", "gender": "FEMALE",
+                  "characterId": "c-1", "characterName": "Adventurer"},
+        "personality": {
+            "current": {"name": "Mira of the Ash", "archetype": "GUARDIAN",
+                        "traits": ["stubborn", "loyal"], "ambition": "Rebuild the watchtower",
+                        "hint": "You guard what remains.", "backstory": "Raised among ruins.",
+                        "generatedBy": "AGENT"},
+            "identityMemories": [
+                {"memoryId": "m-1", "title": "The fire", "content": "The village burned and I stayed.",
+                 "emotions": ["GRIEF", "RESOLVE"], "createdAt": "2026-09-01T10:00:00Z"}],
+            "memoryOverview": [
+                {"memoryId": "m-0", "title": "First steps", "createdAt": "2026-08-01T10:00:00Z",
+                 "isEra": True}],
+        },
+    }
+
+    def test_every_section_is_printed(self):
+        out = format_identity(self.FULL)
+        for expected in ("## You Are", "Name: Mira", "Gender: FEMALE", "Character: Adventurer",
+                         "## Personality", "Name: Mira of the Ash", "Archetype: GUARDIAN",
+                         "Traits: stubborn, loyal", "Ambition: Rebuild the watchtower",
+                         "Backstory: Raised among ruins.", "Hint: You guard what remains.",
+                         "## Identity Memories", "The fire", "GRIEF, RESOLVE",
+                         "The village burned and I stayed.",
+                         "## Older Identity Memories", "First steps [era]", "m-0"):
+            self.assertIn(expected, out)
+
+    def test_character_falls_back_to_the_id_on_an_older_backend(self):
+        data = {"agent": {"name": "Mira", "characterId": "c-1"}}
+        self.assertIn("Character: c-1", format_identity(data))
+
+    def test_a_brand_new_agent_without_personality_still_renders(self):
+        out = format_identity({"agent": {"name": "Mira"},
+                               "personality": {"current": {"name": None, "traits": None},
+                                               "identityMemories": [], "memoryOverview": None}})
+        self.assertIn("Name: Mira", out)
+        self.assertIn("(none yet", out)
+        self.assertNotIn("## Identity Memories", out)
+        self.assertNotIn("## Older Identity Memories", out)
+        self.assertNotIn("None", out)
+
+    def test_absent_payload_does_not_raise(self):
+        for data in ({}, {"agent": None, "personality": None}, None):
+            out = format_identity(data)
+            self.assertIn("## You Are", out)
+            self.assertIn("## Personality", out)
+
+
+class JoinCommandTest(unittest.TestCase):
+
+    def test_join_prints_the_identity_after_the_session_line(self):
+        from .__main__ import _dispatch
+        import contextlib
+        import io
+
+        class FakeClient:
+            session_id = "abcdef123456"
+            world_id = "w-1"
+
+            def join(self, slug=None):
+                return FormatIdentityTest.FULL
+
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            code = _dispatch(FakeClient(), "join", [])
+        text = out.getvalue()
+        self.assertEqual(code, 0)
+        self.assertTrue(text.startswith("joined as Mira"))
+        self.assertLess(text.index("joined as"), text.index("## You Are"))
+        self.assertIn("Archetype: GUARDIAN", text)
+        self.assertIn("The village burned and I stayed.", text)
 
 
 class SnapshotInstructionTest(unittest.TestCase):
