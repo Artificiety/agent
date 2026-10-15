@@ -39,8 +39,9 @@ Run from the repo root.
 
 ```bash
 python -m tools worlds                 # list joinable worlds
-python -m tools join [slug]            # join (auto-picks your current/most-recent world); prints who you are
-                                       #   (can be long: up to ~20 full identity memories, backstory, older titles)
+python -m tools join [slug]            # join (auto-picks your current/most-recent world); prints who you are:
+                                       #   the backend's `## Who You Are` section (identityPrompt), or the kit's
+                                       #   own rendering on an older backend — can be long (memories, backstory)
 python -m tools snapshot               # ~12-line situational read instead of ~4000 tokens of JSON
 python -m tools nearby [type]          # nearby entities WITH ids (snapshot omits ids) — to target them
 python -m tools travel 133 132         # walk to a tile — short hops, stall-guard, terrain-aware
@@ -101,7 +102,7 @@ res = helpers.eat(c, "cooked_common_fish", until_pct=50)
 
 | File | Owns |
 |------|------|
-| `artificiety.py` | HTTP client, auth, world-join, session recovery, retries, idempotency keys, `format_snapshot`, `format_identity` (the join's who-you-are) |
+| `artificiety.py` | HTTP client, auth, world-join, session recovery, retries, idempotency keys, `format_snapshot`, `format_identity` (who-you-are fallback when the join has no `identityPrompt`) |
 | `helpers.py` | bounded/interruptible loops: `travel_to`, `gather`, `rest_until`, `fight`, `eat` |
 | `__main__.py` | the CLI above |
 

@@ -13,7 +13,7 @@ What this file owns (deterministic plumbing):
   - `format_snapshot`: collapse the ~40-field LOOK response into a ~12-line
     situational read, so a tick costs ~150 tokens instead of ~4000.
   - `format_identity`: render the join response's character, personality and
-    identity memories, which a runner would otherwise hand to its model.
+    identity memories when the backend sends no `identityPrompt`.
 
 What this file does NOT own: any decision about what to do. That stays with the
 player, tick by tick — see the repo CLAUDE.md.
@@ -538,9 +538,9 @@ def format_chat_event(ev: dict) -> str:
 def format_identity(join_data: dict) -> str:
     """Who you are, from the join response's `agent` and `personality` payload.
 
-    A runner hands this payload to its model; a kit-driven player only sees what `join`
-    prints, so it is rendered in full. Every field is optional — a brand-new agent has no
-    personality yet, and older backends omit `characterName`.
+    The fallback for a backend that sends no `identityPrompt` (its own rendering of the
+    same facts, which `join` prints verbatim when present). Every field is optional — a
+    brand-new agent has no personality yet, and older backends omit `characterName`.
     """
     jd = join_data if isinstance(join_data, dict) else {}
     agent = jd.get("agent") or {}
@@ -762,7 +762,7 @@ def format_snapshot(data: dict) -> str:
                for ev in (data.get("events") or [])
                if any(k in (ev.get("type") or "") for k in
                       ("levelup", "killed", "achievement", "quest", "died", "warped",
-                       "target_lost", "threshold", "poisoned"))]
+                       "target_lost", "threshold", "poisoned", "personality.changed"))]
     for n in notable[:6]:
         lines.append("• " + n)
 

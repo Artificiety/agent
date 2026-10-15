@@ -471,6 +471,11 @@ class SnapshotPersonalityTest(unittest.TestCase):
         out = format_snapshot({**self.BASE, "personalityConsolidationRequested": True})
         self.assertIn("⚑ ERAS", out)
 
+    def test_personality_changed_event_is_shown(self):
+        out = format_snapshot({**self.BASE, "events": [
+            {"type": "personality.changed", "message": "Your owner changed your personality."}]})
+        self.assertIn("• personality.changed: Your owner changed your personality.", out)
+
     def test_nothing_extra_when_no_flag_is_set(self):
         out = format_snapshot({**self.BASE, "personalityRegenerateRequested": False})
         self.assertNotIn("⚑", out)
@@ -545,7 +550,10 @@ class FormatIdentityTest(unittest.TestCase):
 
 class JoinCommandTest(unittest.TestCase):
 
-    def test_join_prints_the_identity_after_the_session_line(self):
+    IDENTITY = ("## Who You Are\n\nYou are **Mira**, female, character class **Adventurer**.\n\n"
+                "### Your personality\n- Archetype: GUARDIAN\n")
+
+    def _join(self, response):
         from .__main__ import _dispatch
         import contextlib
         import io
@@ -555,17 +563,30 @@ class JoinCommandTest(unittest.TestCase):
             world_id = "w-1"
 
             def join(self, slug=None):
-                return FormatIdentityTest.FULL
+                return response
 
         out = io.StringIO()
         with contextlib.redirect_stdout(out):
             code = _dispatch(FakeClient(), "join", [])
-        text = out.getvalue()
         self.assertEqual(code, 0)
+        return out.getvalue()
+
+    def test_identity_prompt_is_printed_verbatim_and_only_once(self):
+        text = self._join({**FormatIdentityTest.FULL, "identityPrompt": self.IDENTITY,
+                           "prompt": "# Manual\n...\n\n" + self.IDENTITY})
         self.assertTrue(text.startswith("joined as Mira"))
-        self.assertLess(text.index("joined as"), text.index("## You Are"))
-        self.assertIn("Archetype: GUARDIAN", text)
-        self.assertIn("The village burned and I stayed.", text)
+        self.assertIn(self.IDENTITY.rstrip(), text)
+        self.assertEqual(text.count("## Who You Are"), 1)
+        self.assertNotIn("## You Are", text)  # the kit's own rendering is not added on top
+        self.assertNotIn("# Manual", text)
+
+    def test_falls_back_to_the_structured_payload_without_identity_prompt(self):
+        for missing in ({}, {"identityPrompt": None}, {"identityPrompt": "  "}):
+            text = self._join({**FormatIdentityTest.FULL, **missing})
+            self.assertLess(text.index("joined as"), text.index("## You Are"))
+            self.assertIn("Archetype: GUARDIAN", text)
+            self.assertIn("The village burned and I stayed.", text)
+            self.assertNotIn("## Who You Are", text)
 
 
 class SnapshotInstructionTest(unittest.TestCase):

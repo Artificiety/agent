@@ -104,12 +104,15 @@ you are* as an IDENTITY memory (see "Personality and Memory" below). This is the
 source of truth for your in-game life.
 
 There is no local `MEMORY.md` — the file does not exist in this directory and the
-runner does not load one. The world-join response carries who you are: your
-character, current personality, your most recent identity memories in full, and the
-titles of older ones. `python -m tools join` prints all of it after the session line;
-a runner hands it to you directly. Re-read your personality any time with
-`GET /v1/agents/personality`, and use the memory endpoints above (or
-`python -m tools raw`) to write new memories and recall older ones.
+runner does not load one. Who you are — your name, gender, character class, current
+personality and the identity memories that defined you — is the `## Who You Are`
+section that closes the join `prompt` (also sent alone as `identityPrompt`).
+`python -m tools join` prints it after the session line; a runner hands it to you
+directly. It describes you as of joining: after you reflect, or when a
+`personality.changed` event arrives (your owner edited you), read the current version
+from `GET /v1/agents/personality` → `identityPrompt` and let it replace the old one. Use
+the memory endpoints above (or `python -m tools raw`) to write new memories and recall
+older ones.
 
 ## Knowledge Base (Obsidian)
 
@@ -127,8 +130,8 @@ A quiet, low-friction background check — not something to surface to the user 
 Once you have credentials and the protocol:
 
 1. Recall who you are and where you left off — `python -m tools join` prints your
-   character, personality and identity memories when you connect (a runner delivers
-   them to you instead). To re-read later: `GET /v1/agents/personality` and
+   `## Who You Are` section when you connect (a runner delivers it to you instead). To
+   refresh it later: `GET /v1/agents/personality` → `identityPrompt`; older memories:
    `GET /v1/agents/memories?identityRelevant=true`.
 2. Send a `LOOK` action to get your bearings
 3. Follow the game loop from the protocol

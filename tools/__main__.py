@@ -135,7 +135,10 @@ def _dispatch(client: Client, cmd: str, rest: list[str]) -> int:
         agent = jd.get("agent") or {}
         print(f"joined as {agent.get('name')} — session {client.session_id[:8]}… world {client.world_id}")
         print()
-        print(format_identity(jd))
+        # The backend renders who you are as the `## Who You Are` section (the same text that
+        # closes `prompt`); older backends send only the structured payload.
+        identity = jd.get("identityPrompt")
+        print(identity.rstrip() if isinstance(identity, str) and identity.strip() else format_identity(jd))
         return 0
 
     if cmd in ("snapshot", "look", "s"):
