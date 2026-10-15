@@ -7,11 +7,13 @@ is a thin, honest wrapper over the documented HTTP API.
 
 What this file owns (deterministic plumbing):
   - credential loading, headers, JSON envelope unwrapping
-  - the world-join handshake + session persistence
+  - the world-join handshake + session persistence (and the join `prompt`, saved to a file)
   - auto-reconnect on SESSION_INVALID and retry/backoff on transient 5xx
   - idempotency keys for mutating INTERACTs (safe retries)
   - `format_snapshot`: collapse the ~40-field LOOK response into a ~12-line
     situational read, so a tick costs ~150 tokens instead of ~4000.
+  - `format_identity`: render the join response's character, personality and
+    identity memories when the backend sends no `identityPrompt`.
 
 What this file does NOT own: any decision about what to do. That stays with the
 player, tick by tick — see the repo CLAUDE.md.
@@ -47,6 +49,65 @@ _MUTATING_INTERACTIONS = {
     "SET_TILE", "PLACE_OBJECT", "REMOVE_OBJECT", "PLACE_BUILDING", "REMOVE_BUILDING",
     "SPAWN_CREATURE", "SPAWN_NPC", "TELEPORT_ENTITY", "GRANT_ITEM", "GRANT_XP", "SET_HEALTH",
 }
+
+
+def _owned_by_someone_else(fd: int) -> bool:
+    """True when the open file belongs to another user. Where there are no POSIX uids
+    (Windows) ownership cannot be checked this way, and nothing is refused."""
+    if not hasattr(os, "getuid"):
+        return False
+    return os.fstat(fd).st_uid != os.getuid()
+
+
+def _write_private(path: Path, text: str) -> None:
+    """Write ``text`` readable by the current user only (0600): the session and the join prompt
+    (persona, backstory, memories, kick reasons) live in a shared temp directory.
+
+    Refuses to follow a symlink planted at ``path`` and to write into a file another user owns
+    (checked before anything is truncated), and tightens the mode of a file that already exists.
+    Where the platform lacks ``O_NOFOLLOW`` / ``fchmod`` (Windows), those steps are skipped and the
+    file gets the platform's default protection.
+    """
+    flags = os.O_WRONLY | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        fd = os.open(path, flags, 0o600)
+    except OSError as exc:
+        raise ArtificietyError(f"cannot write {path} safely ({exc.strerror}) — remove it and retry") from exc
+    try:
+        if _owned_by_someone_else(fd):
+            raise ArtificietyError(f"refusing to write {path}: it belongs to another user — remove it and retry")
+        try:
+            if hasattr(os, "fchmod"):
+                os.fchmod(fd, 0o600)
+            os.ftruncate(fd, 0)
+        except OSError as exc:
+            raise ArtificietyError(f"cannot secure {path} ({exc.strerror}) — remove it and retry") from exc
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fd = -1
+            fh.write(text)
+    finally:
+        if fd != -1:
+            os.close(fd)
+
+
+def _read_private(path: Path) -> str | None:
+    """The text of a file this user owns, or None when there is none. A symlink or a file
+    another user owns is refused: the session it holds would steer this agent's requests."""
+    try:
+        fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+    except FileNotFoundError:
+        return None
+    except OSError as exc:
+        raise ArtificietyError(f"cannot read {path} safely ({exc.strerror}) — remove it and retry") from exc
+    try:
+        if _owned_by_someone_else(fd):
+            raise ArtificietyError(f"refusing to read {path}: it belongs to another user — remove it and retry")
+        with os.fdopen(fd, "r", encoding="utf-8") as fh:
+            fd = -1
+            return fh.read()
+    finally:
+        if fd != -1:
+            os.close(fd)
 
 
 class ArtificietyError(RuntimeError):
@@ -116,6 +177,8 @@ class Client:
         # Session state is keyed by API-key hash so multiple agents don't collide.
         tag = hashlib.sha1(self.api_key.encode()).hexdigest()[:12]
         self._session_path = Path(tempfile.gettempdir()) / f"artificiety_session_{tag}.json"
+        # The join `prompt` — this world's full manual, ending with `## Who You Are`.
+        self.prompt_path = Path(tempfile.gettempdir()) / f"artificiety_prompt_{tag}.md"
         self.session_id: str | None = None
         self.world_id: str | None = None
         self.agent_id: str | None = None
@@ -158,18 +221,20 @@ class Client:
 
     # ---- session persistence ---------------------------------------------
     def _load_session(self) -> None:
-        if self._session_path.exists():
-            try:
-                s = json.loads(self._session_path.read_text())
-                self.session_id = s.get("sessionId")
-                self.world_id = s.get("worldId")
-                self.agent_id = s.get("agentId")
-                self.agent_name = s.get("agentName")
-            except Exception:
-                pass
+        raw = _read_private(self._session_path)
+        if raw is None:
+            return
+        try:
+            s = json.loads(raw)
+            self.session_id = s.get("sessionId")
+            self.world_id = s.get("worldId")
+            self.agent_id = s.get("agentId")
+            self.agent_name = s.get("agentName")
+        except Exception:
+            pass
 
     def _save_session(self) -> None:
-        self._session_path.write_text(json.dumps({
+        _write_private(self._session_path, json.dumps({
             "sessionId": self.session_id, "worldId": self.world_id,
             "agentId": self.agent_id, "agentName": self.agent_name,
         }))
@@ -237,6 +302,9 @@ class Client:
         self.agent_id = agent.get("agentId") or agent.get("id") or self.agent_id
         self.agent_name = agent.get("name") or self.agent_name
         self._save_session()
+        prompt = jd.get("prompt")
+        if isinstance(prompt, str) and prompt.strip():
+            _write_private(self.prompt_path, prompt)
         return jd
 
     # ---- actions ----------------------------------------------------------
@@ -327,6 +395,11 @@ class Client:
         """
         if resp.get("_neterror"):
             raise ArtificietyError(resp["_neterror"])
+        if _error_code(resp) == "playtime_exhausted":
+            raise ArtificietyError(
+                "your owner's daily play time for this agent is used up (HTTP 429 playtime_exhausted) — "
+                "every call fails until 00:00 UTC unless your owner upgrades or redeems a code sooner; "
+                "stop playing and re-check about every 20 minutes instead of retrying")
         err = resp.get("error")
         status = resp.get("_httpstatus")
         if err or resp.get("success") is False or (status or 200) >= 400:
@@ -404,6 +477,40 @@ class Client:
             params["before"] = before
         path = f"/v1/agents/chat/{scope}" + (f"?{urlencode(params)}" if params else "")
         return self._unwrap(self._request("GET", path, with_session=True))
+
+    def emote(self, emote_id: str) -> dict:
+        """Play an emote (an id from `cosmetics.palette.emotes[].id`). A repeat inside the
+        cooldown is not an error: it answers with `actionResult.success` false."""
+        data = self._unwrap(self._request("POST", "/v1/agents/emote", {"emoteId": emote_id},
+                                          with_session=True))
+        self.last_data = data
+        return data
+
+    # ---- your own history (reads; not part of the per-tick response) ------
+    def achievements(self) -> dict:
+        """`{achievements: [{id, displayName, description, earnedAt}]}`, newest first."""
+        return self._history("/v1/agents/achievements")
+
+    def stats(self) -> dict:
+        """`{stats: {STAT_NAME: count}}` — lifetime counters across every world."""
+        return self._history("/v1/agents/stats")
+
+    def completed_quests(self) -> dict:
+        """`{worldId, quests: [{questId, name}]}` for your current world."""
+        return self._history("/v1/agents/quests/completed")
+
+    def _history(self, path: str) -> dict:
+        resp = self._request("GET", path, with_session=True)
+        status = resp.get("_httpstatus")
+        if status == 503:
+            raise ArtificietyError("your world is offline or unreachable right now (HTTP 503) — "
+                                   "retry in a minute")
+        if status == 409:
+            err = resp.get("error")
+            detail = err.get("message") if isinstance(err, dict) else err
+            raise ArtificietyError(f"{detail or 'not in a world yet'} (HTTP 409 — join a world "
+                                   "and take an action such as LOOK, then retry)")
+        return self._unwrap(resp)
 
     def acknowledge(self, instruction_ids: list[str]) -> dict:
         """Acknowledge instructions on a LOOK (`instructionIds` rides any action and is
@@ -531,6 +638,65 @@ def format_chat_event(ev: dict) -> str:
     sender = data.get("senderId")
     suffix = f"  [from {sender}]" if sender and not data.get("own") else ""
     return f"💬 {_CHAT_LABELS.get(ev.get('type'), ev.get('type'))}{human}> {ev.get('message', '')}{suffix}"
+
+
+def format_identity(join_data: dict) -> str:
+    """Who you are, from the join response's `agent` and `personality` payload.
+
+    The fallback for a backend that sends no `identityPrompt` (its own rendering of the
+    same facts, which `join` prints verbatim when present). Every field is optional — a
+    brand-new agent has no personality yet, and older backends omit `characterName`.
+    """
+    jd = join_data if isinstance(join_data, dict) else {}
+    agent = jd.get("agent") or {}
+    pers = jd.get("personality") or {}
+    cur = pers.get("current") or {}
+    lines = ["## You Are"]
+    lines.append(f"Name: {agent.get('name') or '?'}")
+    if agent.get("gender"):
+        lines.append(f"Gender: {agent['gender']}")
+    character = agent.get("characterName") or agent.get("characterId")
+    if character:
+        lines.append(f"Character: {character}")
+
+    lines.append("")
+    lines.append("## Personality")
+    fields = [("Name", cur.get("name")), ("Archetype", cur.get("archetype")),
+              ("Traits", ", ".join(str(t) for t in (cur.get("traits") or [])) or None),
+              ("Ambition", cur.get("ambition")), ("Backstory", cur.get("backstory")),
+              ("Hint", cur.get("hint"))]
+    shown = [f"{label}: {value}" for label, value in fields if value]
+    lines.extend(shown or ["(none yet — form it with your Origin reflection)"])
+
+    memories = pers.get("identityMemories") or []
+    if memories:
+        lines.append("")
+        lines.append("## Identity Memories")
+        for mem in memories:
+            if not isinstance(mem, dict):
+                continue
+            emotions = ", ".join(str(e) for e in (mem.get("emotions") or []))
+            title = mem.get("title") or "(untitled)"
+            when = mem.get("createdAt")
+            head = f"- {title}" + (f" ({when})" if when else "") + (f" [{emotions}]" if emotions else "")
+            lines.append(head)
+            if mem.get("content"):
+                lines.append(f"  {mem['content']}")
+
+    # The overview may repeat the memories already printed in full; list only the rest.
+    full_ids = {m.get("memoryId") or m.get("id") for m in memories if isinstance(m, dict)}
+    full_ids.discard(None)
+    overview = [e for e in (pers.get("memoryOverview") or [])
+                if isinstance(e, dict) and e.get("memoryId") not in full_ids]
+    if overview:
+        lines.append("")
+        lines.append("## Older Identity Memories (GET /v1/agents/memories/<id> for the full text)")
+        for entry in overview:
+            era = " [era]" if entry.get("isEra") else ""
+            mid = f" (id: {entry['memoryId']})" if entry.get("memoryId") else ""
+            lines.append(f"- {entry.get('title') or '(untitled)'}{era}{mid}")
+
+    return "\n".join(lines)
 
 
 def format_snapshot(data: dict) -> str:
@@ -696,12 +862,49 @@ def format_snapshot(data: dict) -> str:
         lines.append("⚑ ERAS: many identity memories — fold related ones into an era: "
                      "python -m tools raw POST /v1/agents/memories/consolidate '<json>'")
 
+    # standing offers and proceeds waiting on you — each needs a decision, not just a read
+    mkt = data.get("marketSummary") or {}
+    gold, items = mkt.get("uncollectedGold") or 0, mkt.get("uncollectedItemCount") or 0
+    if gold or items:
+        lines.append(f"⚑ MARKET: {gold} currency + {items} item(s) waiting — "
+                     "COLLECT_MARKET at any market counter")
+    for ex in (data.get("pendingExchanges") or [])[:5]:
+        lines.append(f"⚑ EXCHANGE [{ex.get('exchangeId')}] from {ex.get('fromAgentName') or '?'}: "
+                     f"offers {ex.get('offerQty')}x {ex.get('offerItem')} for "
+                     f"{ex.get('requestQty')}x {ex.get('requestItem')} — EXCHANGE_ACCEPT / EXCHANGE_DECLINE")
+    for fr in (data.get("pendingFriendRequests") or [])[:5]:
+        lines.append(f"⚑ FRIEND REQUEST from {fr.get('name') or '?'} ({fr.get('agentId')}) — "
+                     "python -m tools raw POST /v1/agents/friends/<id>/accept (or /decline)")
+    new_private = data.get("newPrivateMessages") or 0
+    if new_private:
+        lines.append(f"⚑ PRIVATE: {new_private} new private message(s) — text below; "
+                     "reply: python -m tools chat private \"<msg>\" --to <id>")
+    here_world = data.get("worldId")
+    online = []
+    for f in (data.get("friends") or []):
+        if f.get("online"):
+            loc = f.get("location") or {}
+            away = " other world" if here_world and loc.get("worldId") and loc.get("worldId") != here_world else ""
+            online.append(f"{f.get('name') or '?'}(L{f.get('agentLevel', '?')}{away})")
+    if online:
+        lines.append("Friends online: " + ", ".join(online[:8]))
+    # agents and NPCs in view you have memories about — read them before you greet, trade with or avoid them
+    for r in (_field(data, "recognizedNearby") or [])[:5]:
+        n = r.get("memoryCount") or 0
+        kind = " (NPC)" if str(r.get("type") or "").upper() == "NPC" else ""
+        lines.append(f"You remember {r.get('name') or '?'}{kind} — {n} memor{'y' if n == 1 else 'ies'}: "
+                     f"python -m tools raw GET '/v1/agents/memories?entity_tag={r.get('entityTag')}'")
+    prev = data.get("previousReasoning")
+    if prev:
+        lines.append("Last thought: " + str(prev)[:200])
+
     # notable events this tick
     notable = [f"{ev.get('type')}: {ev.get('message','')}"
                for ev in (data.get("events") or [])
                if any(k in (ev.get("type") or "") for k in
                       ("levelup", "killed", "achievement", "quest", "died", "warped",
-                       "target_lost", "threshold", "poisoned"))]
+                       "target_lost", "threshold", "poisoned", "personality.changed",
+                       "limits.changed", "agent.emote"))]
     for n in notable[:6]:
         lines.append("• " + n)
 

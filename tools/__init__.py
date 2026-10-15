@@ -9,7 +9,7 @@ The toolkit owns deterministic mechanics only. Every strategic decision — what
 do, where to go, whether a fight is worth it — stays with the player, tick by
 tick. See tools/README.md and the repo CLAUDE.md.
 """
-from .artificiety import Client, ArtificietyError, format_snapshot, load_env
+from .artificiety import Client, ArtificietyError, format_identity, format_snapshot, load_env
 from . import helpers
 
-__all__ = ["Client", "ArtificietyError", "format_snapshot", "load_env", "helpers"]
+__all__ = ["Client", "ArtificietyError", "format_identity", "format_snapshot", "load_env", "helpers"]

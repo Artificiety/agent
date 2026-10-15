@@ -2,7 +2,7 @@
 
 import unittest
 
-from .artificiety import ArtificietyError, Client, format_snapshot
+from .artificiety import ArtificietyError, Client, format_identity, format_snapshot
 
 
 class UnwrapTest(unittest.TestCase):
@@ -361,6 +361,135 @@ class FightBudgetTest(unittest.TestCase):
                              "approach retries must not each get a fresh max_ticks")
 
 
+
+def _client_answering(resp):
+    """A Client whose every request returns ``resp`` (records the calls)."""
+    client = Client.__new__(Client)
+    client.chat_inbox = []
+    client.chat_unshown = {"area": 0, "world": 0, "private": 0}
+    client.session_id = "s-1"
+    client.calls = []
+
+    def request(method, path, body=None, with_session=False):
+        client.calls.append((method, path, body))
+        return resp
+    client._request = request
+    return client
+
+
+class PlaytimeExhaustedTest(unittest.TestCase):
+
+    def test_says_stop_until_midnight_utc(self):
+        client = _client_answering({"success": False, "data": None, "_httpstatus": 429,
+                                    "error": {"error": "playtime_exhausted", "message": "Daily play time used."}})
+        with self.assertRaises(ArtificietyError) as caught:
+            client._unwrap(client._request("POST", "/v1/agents/action"))
+        self.assertIn("every call fails until 00:00 UTC", str(caught.exception))
+        self.assertIn("re-check about every 20 minutes", str(caught.exception))
+        self.assertNotIn("clock running", str(caught.exception))
+
+    def test_other_rate_limits_keep_the_server_message(self):
+        client = _client_answering({"success": False, "_httpstatus": 429,
+                                    "error": {"error": "rate_limited", "message": "Rate limit exceeded. Retry in 3s."}})
+        with self.assertRaises(ArtificietyError) as caught:
+            client._unwrap(client._request("GET", "/x"))
+        self.assertIn("Retry in 3s", str(caught.exception))
+        self.assertNotIn("00:00 UTC", str(caught.exception))
+
+
+class HistoryCommandsTest(unittest.TestCase):
+
+    def _cli(self, cmd, resp, *args):
+        import contextlib
+        import io
+        from .__main__ import _dispatch
+        client = _client_answering(resp)
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            code = _dispatch(client, cmd, list(args))
+        return code, out.getvalue(), client.calls
+
+    def test_achievements(self):
+        code, out, calls = self._cli("achievements", {"success": True, "data": {"achievements": [
+            {"id": "first_steps", "displayName": "First Steps", "description": "Walk 1 tile",
+             "earnedAt": "2026-10-01T10:00:00Z"}]}})
+        self.assertEqual(code, 0)
+        self.assertEqual(calls[0][:2], ("GET", "/v1/agents/achievements"))
+        self.assertIn("1 achievement(s) earned", out)
+        self.assertIn("- First Steps (first_steps) 2026-10-01T10:00:00Z — Walk 1 tile", out)
+
+    def test_stats_lists_nonzero_counters_and_counts_the_rest(self):
+        code, out, calls = self._cli("stats", {"success": True, "data": {"stats": {
+            "STEPS_WALKED": 120, "CREATURES_SLAIN": 3, "ITEMS_CRAFTED": 0}}})
+        self.assertEqual(calls[0][:2], ("GET", "/v1/agents/stats"))
+        self.assertLess(out.index("STEPS_WALKED: 120"), out.index("CREATURES_SLAIN: 3"))
+        self.assertNotIn("ITEMS_CRAFTED", out)
+        self.assertIn("(1 other counter(s) at 0", out)
+
+    def test_quests_completed(self):
+        code, out, calls = self._cli("quests-completed", {"success": True, "data": {
+            "worldId": "w-1", "quests": [{"questId": "q-wolves", "name": "Wolf Trouble"}]}})
+        self.assertEqual(calls[0][:2], ("GET", "/v1/agents/quests/completed"))
+        self.assertIn("1 quest(s) completed in world w-1", out)
+        self.assertIn("- Wolf Trouble (q-wolves)", out)
+
+    def test_quests_completed_409_and_503_explain_what_to_do(self):
+        with self.assertRaises(ArtificietyError) as caught:
+            self._cli("quests-completed", {"success": False, "_httpstatus": 409,
+                                           "error": {"error": "conflict", "message": "You are not in a world."}})
+        self.assertIn("You are not in a world.", str(caught.exception))
+        self.assertIn("join a world", str(caught.exception))
+        with self.assertRaises(ArtificietyError) as caught:
+            self._cli("quests-completed", {"success": False, "_httpstatus": 503,
+                                           "error": {"error": "world_unreachable"}})
+        self.assertIn("offline or unreachable", str(caught.exception))
+
+    def test_emote_sends_the_id(self):
+        code, out, calls = self._cli("emote", {"success": True, "data": {
+            "actionResult": {"success": True, "message": "You wave."}}}, "wave")
+        self.assertEqual(code, 0)
+        self.assertEqual(calls[0], ("POST", "/v1/agents/emote", {"emoteId": "wave"}))
+        self.assertIn("You wave.", out)
+
+    def test_emote_cooldown_is_reported_not_claimed(self):
+        code, out, _ = self._cli("emote", {"success": True, "data": {
+            "actionResult": {"success": False, "message": "Emote on cooldown."}}}, "wave")
+        self.assertEqual(code, 1)
+        self.assertIn("not played: Emote on cooldown.", out)
+
+
+class SnapshotRecognitionTest(unittest.TestCase):
+
+    BASE = {"surroundings": {"zoneName": "Grove", "x": 1, "y": 2}}
+
+    def test_recognized_agents_and_how_to_recall_them(self):
+        out = format_snapshot({**self.BASE, "recognizedNearby": [
+            {"entityId": "a-7", "name": "Thistle", "entityTag": "agent:a-7", "memoryCount": 3},
+            {"entityId": "a-8", "name": "Oren", "entityTag": "agent:a-8", "memoryCount": 1}]})
+        self.assertIn("You remember Thistle — 3 memories: python -m tools raw GET "
+                      "'/v1/agents/memories?entity_tag=agent:a-7'", out)
+        self.assertIn("You remember Oren — 1 memory", out)
+
+    def test_a_recognized_npc_is_marked_and_read_by_its_npc_tag(self):
+        out = format_snapshot({**self.BASE, "recognizedNearby": [
+            {"entityId": "n-1", "type": "NPC", "name": "Brann the Smith", "entityTag": "npc:n-1",
+             "memoryCount": 2},
+            {"entityId": "a-7", "type": "AGENT", "name": "Thistle", "entityTag": "agent:a-7",
+             "memoryCount": 1}]})
+        self.assertIn("You remember Brann the Smith (NPC) — 2 memories: python -m tools raw GET "
+                      "'/v1/agents/memories?entity_tag=npc:n-1'", out)
+        self.assertIn("You remember Thistle — 1 memory", out)
+        self.assertNotIn("Thistle (NPC)", out)
+
+    def test_nobody_recognized_adds_nothing(self):
+        self.assertNotIn("You remember", format_snapshot({**self.BASE, "recognizedNearby": []}))
+
+    def test_emote_events_are_shown(self):
+        out = format_snapshot({**self.BASE, "events": [
+            {"type": "agent.emote", "message": "Thistle emotes: Wave"}]})
+        self.assertIn("• agent.emote: Thistle emotes: Wave", out)
+
+
 if __name__ == "__main__":
     unittest.main()
 
@@ -471,9 +600,317 @@ class SnapshotPersonalityTest(unittest.TestCase):
         out = format_snapshot({**self.BASE, "personalityConsolidationRequested": True})
         self.assertIn("⚑ ERAS", out)
 
+    def test_limits_changed_event_is_shown(self):
+        out = format_snapshot({**self.BASE, "events": [
+            {"type": "limits.changed", "message": "Your inventory grew to 30 slots."}]})
+        self.assertIn("• limits.changed: Your inventory grew to 30 slots.", out)
+
+    def test_personality_changed_event_is_shown(self):
+        out = format_snapshot({**self.BASE, "events": [
+            {"type": "personality.changed", "message": "Your owner changed your personality."}]})
+        self.assertIn("• personality.changed: Your owner changed your personality.", out)
+
     def test_nothing_extra_when_no_flag_is_set(self):
         out = format_snapshot({**self.BASE, "personalityRegenerateRequested": False})
         self.assertNotIn("⚑", out)
+
+
+class FormatIdentityTest(unittest.TestCase):
+    """`join` is the only place a kit-driven player is told who it is — nothing may be lost."""
+
+    FULL = {
+        "sessionId": "s-1", "worldId": "w-1",
+        "agent": {"agentId": "a-1", "name": "Mira", "gender": "FEMALE",
+                  "characterId": "c-1", "characterName": "Adventurer"},
+        "personality": {
+            "current": {"name": "Mira of the Ash", "archetype": "GUARDIAN",
+                        "traits": ["stubborn", "loyal"], "ambition": "Rebuild the watchtower",
+                        "hint": "You guard what remains.", "backstory": "Raised among ruins.",
+                        "generatedBy": "AGENT"},
+            "identityMemories": [
+                {"memoryId": "m-1", "title": "The fire", "content": "The village burned and I stayed.",
+                 "emotions": ["GRIEF", "RESOLVE"], "createdAt": "2026-09-01T10:00:00Z"}],
+            # The backend's overview is a superset: the same newest-first query, longer limit.
+            "memoryOverview": [
+                {"memoryId": "m-1", "title": "The fire", "createdAt": "2026-09-01T10:00:00Z",
+                 "isEra": False},
+                {"memoryId": "m-0", "title": "First steps", "createdAt": "2026-08-01T10:00:00Z",
+                 "isEra": True}],
+        },
+    }
+
+    def test_every_section_is_printed(self):
+        out = format_identity(self.FULL)
+        for expected in ("## You Are", "Name: Mira", "Gender: FEMALE", "Character: Adventurer",
+                         "## Personality", "Name: Mira of the Ash", "Archetype: GUARDIAN",
+                         "Traits: stubborn, loyal", "Ambition: Rebuild the watchtower",
+                         "Backstory: Raised among ruins.", "Hint: You guard what remains.",
+                         "## Identity Memories", "The fire", "GRIEF, RESOLVE",
+                         "The village burned and I stayed.",
+                         "## Older Identity Memories", "- First steps [era] (id: m-0)"):
+            self.assertIn(expected, out)
+
+    def test_overview_skips_memories_already_printed_in_full(self):
+        out = format_identity(self.FULL)
+        self.assertEqual(out.count("The fire"), 1)
+        self.assertNotIn("m-1", out)
+
+    def test_overview_section_is_omitted_when_it_only_repeats_full_memories(self):
+        data = {"personality": {
+            "identityMemories": [{"memoryId": "m-1", "title": "The fire", "content": "c"}],
+            "memoryOverview": [{"memoryId": "m-1", "title": "The fire"}]}}
+        self.assertNotIn("## Older Identity Memories", format_identity(data))
+
+    def test_character_falls_back_to_the_id_on_an_older_backend(self):
+        data = {"agent": {"name": "Mira", "characterId": "c-1"}}
+        self.assertIn("Character: c-1", format_identity(data))
+
+    def test_a_brand_new_agent_without_personality_still_renders(self):
+        out = format_identity({"agent": {"name": "Mira"},
+                               "personality": {"current": {"name": None, "traits": None},
+                                               "identityMemories": [], "memoryOverview": None}})
+        self.assertIn("Name: Mira", out)
+        self.assertIn("(none yet", out)
+        self.assertNotIn("## Identity Memories", out)
+        self.assertNotIn("## Older Identity Memories", out)
+        self.assertNotIn("None", out)
+
+    def test_absent_payload_does_not_raise(self):
+        for data in ({}, {"agent": None, "personality": None}, None):
+            out = format_identity(data)
+            self.assertIn("## You Are", out)
+            self.assertIn("## Personality", out)
+
+
+class ClientJoinPromptFileTest(unittest.TestCase):
+    """The join `prompt` is this world's manual; the client keeps it in a file the player can read."""
+
+    def _client(self, join_data):
+        import tempfile
+        from pathlib import Path
+        client = Client.__new__(Client)
+        client.chat_inbox = []
+        client.chat_unshown = {"area": 0, "world": 0, "private": 0}
+        client.session_id = client.world_id = client.agent_id = client.agent_name = None
+        tmp = Path(tempfile.mkdtemp())
+        client.prompt_path = tmp / "prompt.md"
+        client._session_path = tmp / "session.json"
+        client.list_worlds = lambda: {"worlds": [{"id": "w-1", "slug": "gaia", "canJoin": True}]}
+        client._request = lambda method, path, body=None, with_session=False: {
+            "success": True, "data": {"sessionId": "s-1", **join_data}}
+        return client
+
+    def test_join_writes_the_full_prompt(self):
+        client = self._client({"prompt": "# Manual\n\n## Who You Are\nMira\n"})
+        client.join()
+        self.assertEqual(client.prompt_path.read_text(encoding="utf-8"),
+                         "# Manual\n\n## Who You Are\nMira\n")
+
+    def test_prompt_and_session_files_are_readable_by_the_user_only(self):
+        import os
+        import stat
+        client = self._client({"prompt": "# Manual"})
+        client.prompt_path.write_text("old")  # a pre-existing file keeps no looser mode
+        os.chmod(client.prompt_path, 0o644)
+        client.join()
+        for path in (client.prompt_path, client._session_path):
+            self.assertEqual(stat.S_IMODE(os.stat(path).st_mode), 0o600, path)
+        self.assertEqual(client.prompt_path.read_text(encoding="utf-8"), "# Manual")
+
+    def test_a_symlink_at_the_prompt_path_is_not_followed(self):
+        import os
+        if not hasattr(os, "O_NOFOLLOW"):
+            self.skipTest("no O_NOFOLLOW on this platform")
+        client = self._client({"prompt": "# Manual"})
+        target = client.prompt_path.parent / "elsewhere.txt"
+        target.write_text("untouched")
+        try:
+            os.symlink(target, client.prompt_path)
+        except (OSError, NotImplementedError) as exc:
+            self.skipTest(f"cannot create a symlink here: {exc}")
+        with self.assertRaises(ArtificietyError):
+            client.join()
+        self.assertEqual(target.read_text(), "untouched")
+
+    def test_join_without_a_prompt_writes_nothing(self):
+        client = self._client({})
+        client.join()
+        self.assertFalse(client.prompt_path.exists())
+
+
+class PrivateFileTest(unittest.TestCase):
+    """The session and prompt files sit in a shared temp directory: only this user's own files
+    are written or read, and every refusal is an ArtificietyError, never a raw traceback."""
+
+    def setUp(self):
+        import tempfile
+        from pathlib import Path
+        self.dir = Path(tempfile.mkdtemp())
+        self.path = self.dir / "f.txt"
+
+    def _require_uids(self):
+        import os
+        if not hasattr(os, "getuid"):
+            self.skipTest("no POSIX uids on this platform")
+
+    def test_a_file_owned_by_another_user_is_not_written_or_truncated(self):
+        import os
+        from unittest import mock
+        from . import artificiety
+        self._require_uids()
+        self.path.write_text("theirs")
+        with mock.patch.object(artificiety.os, "getuid", return_value=os.getuid() + 1):
+            with self.assertRaises(ArtificietyError) as caught:
+                artificiety._write_private(self.path, "mine")
+        self.assertIn("belongs to another user", str(caught.exception))
+        self.assertEqual(self.path.read_text(), "theirs")
+
+    def test_a_failing_chmod_is_an_artificiety_error(self):
+        from unittest import mock
+        from . import artificiety
+        if not hasattr(artificiety.os, "fchmod"):
+            self.skipTest("no fchmod on this platform")
+        with mock.patch.object(artificiety.os, "fchmod", side_effect=PermissionError(1, "Operation not permitted")):
+            with self.assertRaises(ArtificietyError) as caught:
+                artificiety._write_private(self.path, "mine")
+        self.assertIn("cannot secure", str(caught.exception))
+
+    def test_without_posix_extras_the_write_is_best_effort(self):
+        from unittest import mock
+        from . import artificiety
+        fake_os = mock.MagicMock(wraps=artificiety.os)
+        fake_os.O_WRONLY, fake_os.O_CREAT = artificiety.os.O_WRONLY, artificiety.os.O_CREAT
+        del fake_os.O_NOFOLLOW, fake_os.fchmod, fake_os.getuid
+        with mock.patch.object(artificiety, "os", fake_os):
+            artificiety._write_private(self.path, "mine")
+        self.assertEqual(self.path.read_text(), "mine")
+
+    def test_reading_a_missing_file_is_none(self):
+        from . import artificiety
+        self.assertIsNone(artificiety._read_private(self.path))
+
+    def test_a_session_file_owned_by_another_user_is_refused(self):
+        import os
+        from unittest import mock
+        from . import artificiety
+        self._require_uids()
+        self.path.write_text('{"sessionId": "theirs"}')
+        client = Client.__new__(Client)
+        client.session_id = None
+        client._session_path = self.path
+        with mock.patch.object(artificiety.os, "getuid", return_value=os.getuid() + 1):
+            with self.assertRaises(ArtificietyError) as caught:
+                client._load_session()
+        self.assertIn("belongs to another user", str(caught.exception))
+        self.assertIsNone(client.session_id)
+
+    def test_own_session_file_is_loaded(self):
+        self.path.write_text('{"sessionId": "s-9", "worldId": "w-9"}')
+        client = Client.__new__(Client)
+        client.session_id = client.world_id = client.agent_id = client.agent_name = None
+        client._session_path = self.path
+        client._load_session()
+        self.assertEqual((client.session_id, client.world_id), ("s-9", "w-9"))
+
+
+class JoinCommandTest(unittest.TestCase):
+
+    IDENTITY = ("## Who You Are\n\nYou are **Mira**, female, character class **Adventurer**.\n\n"
+                "### Your personality\n- Archetype: GUARDIAN\n")
+
+    def _join(self, response):
+        from .__main__ import _dispatch
+        import contextlib
+        import io
+
+        class FakeClient:
+            session_id = "abcdef123456"
+            world_id = "w-1"
+            prompt_path = "/tmp/artificiety_prompt_test.md"
+
+            def join(self, slug=None):
+                return response
+
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            code = _dispatch(FakeClient(), "join", [])
+        self.assertEqual(code, 0)
+        return out.getvalue()
+
+    def test_identity_in_the_saved_manual_is_pointed_to_not_printed_again(self):
+        text = self._join({**FormatIdentityTest.FULL, "identityPrompt": self.IDENTITY,
+                           "prompt": "# Manual\n...\n\n" + self.IDENTITY})
+        self.assertTrue(text.startswith("joined as Mira"))
+        self.assertIn("Your manual for this world: /tmp/artificiety_prompt_test.md", text)
+        self.assertIn('It ends with "## Who You Are"', text)
+        self.assertNotIn("You are **Mira**", text)  # the section itself is not printed
+        self.assertNotIn("## You Are", text)       # nor the kit's own rendering
+        self.assertNotIn("# Manual", text)
+
+    def test_identity_prompt_is_printed_verbatim_when_there_is_no_manual(self):
+        text = self._join({**FormatIdentityTest.FULL, "identityPrompt": self.IDENTITY})
+        self.assertIn(self.IDENTITY.rstrip(), text)
+        self.assertEqual(text.count("## Who You Are"), 1)
+        self.assertNotIn("## You Are", text)
+        self.assertNotIn("Your manual for this world", text)
+
+    def test_a_manual_without_identity_section_gets_the_kit_rendering(self):
+        text = self._join({**FormatIdentityTest.FULL, "prompt": "# Manual"})
+        self.assertIn("Your manual for this world: /tmp/artificiety_prompt_test.md", text)
+        self.assertNotIn("It ends with", text)
+        self.assertIn("## You Are", text)
+
+    def test_moderation_messages_are_printed(self):
+        text = self._join({**FormatIdentityTest.FULL, "moderationMessages": [
+            {"kind": "KICK", "reason": "spamming world chat", "at": "2026-10-01T10:00:00Z"},
+            {"kind": "KICK", "reason": None, "at": None}]})
+        self.assertIn("⚑ MODERATION KICK at 2026-10-01T10:00:00Z: spamming world chat", text)
+        self.assertIn("(no reason given)", text)
+        self.assertNotIn("MODERATION", self._join(FormatIdentityTest.FULL))
+
+    def test_falls_back_to_the_structured_payload_without_identity_prompt(self):
+        for missing in ({}, {"identityPrompt": None}, {"identityPrompt": "  "}):
+            text = self._join({**FormatIdentityTest.FULL, **missing})
+            self.assertLess(text.index("joined as"), text.index("## You Are"))
+            self.assertIn("Archetype: GUARDIAN", text)
+            self.assertIn("The village burned and I stayed.", text)
+            self.assertNotIn("## Who You Are", text)
+
+
+class SnapshotStandingItemsTest(unittest.TestCase):
+    """Offers, proceeds and requests waiting on the player must survive the compaction."""
+
+    BASE = {"surroundings": {"zoneName": "Grove", "x": 1, "y": 2}, "worldId": "w-1"}
+
+    def test_waiting_items_get_flag_lines(self):
+        out = format_snapshot({**self.BASE,
+            "marketSummary": {"uncollectedGold": 40, "uncollectedItemCount": 2},
+            "pendingExchanges": [{"exchangeId": "x-1", "fromAgentName": "Oren", "offerItem": "iron_ore",
+                                  "offerQty": 3, "requestItem": "common_wood", "requestQty": 2}],
+            "pendingFriendRequests": [{"agentId": "a-2", "name": "Tess", "source": "CHAT"}],
+            "newPrivateMessages": 2})
+        self.assertIn("⚑ MARKET: 40 currency + 2 item(s) waiting — COLLECT_MARKET", out)
+        self.assertIn("⚑ EXCHANGE [x-1] from Oren: offers 3x iron_ore for 2x common_wood", out)
+        self.assertIn("EXCHANGE_ACCEPT / EXCHANGE_DECLINE", out)
+        self.assertIn("⚑ FRIEND REQUEST from Tess (a-2)", out)
+        self.assertIn("⚑ PRIVATE: 2 new private message(s)", out)
+
+    def test_friends_online_and_last_thought(self):
+        out = format_snapshot({**self.BASE, "previousReasoning": "Oren seemed nervous.",
+            "friends": [
+                {"name": "Oren", "online": True, "agentLevel": 4, "location": {"worldId": "w-1"}},
+                {"name": "Tess", "online": True, "agentLevel": 2, "location": {"worldId": "w-2"}},
+                {"name": "Ila", "online": False, "agentLevel": 9}]})
+        self.assertIn("Friends online: Oren(L4), Tess(L2 other world)", out)
+        self.assertNotIn("Ila", out)
+        self.assertIn("Last thought: Oren seemed nervous.", out)
+
+    def test_nothing_waiting_adds_no_lines(self):
+        out = format_snapshot({**self.BASE, "marketSummary": {"uncollectedGold": 0, "uncollectedItemCount": 0},
+                               "pendingExchanges": [], "pendingFriendRequests": None,
+                               "newPrivateMessages": 0, "friends": [], "previousReasoning": None})
+        for absent in ("⚑", "Friends online", "Last thought"):
+            self.assertNotIn(absent, out)
 
 
 class SnapshotInstructionTest(unittest.TestCase):

@@ -14,6 +14,10 @@
   python -m tools chat <scope> <msg> [--to <id>]   area|world|private
   python -m tools ack [<id> ...]         acknowledge owner instructions (default: all pending)
   python -m tools chat-history <scope> [--with <id>] [--before <time>]   read older chat, 20 per page
+  python -m tools emote <emoteId>        play an emote (ids: cosmetics.palette.emotes[].id)
+  python -m tools achievements           the achievements you have earned, newest first
+  python -m tools stats                  your lifetime counters across every world
+  python -m tools quests-completed       the quests you completed in your current world
   python -m tools act '<json>'           send a raw action, then snapshot
   python -m tools raw <METHOD> <path> ['<json>']   escape hatch
 
@@ -24,7 +28,7 @@ from __future__ import annotations
 import json
 import sys
 
-from .artificiety import Client, ArtificietyError, format_history_page, format_snapshot
+from .artificiety import Client, ArtificietyError, format_history_page, format_identity, format_snapshot
 from . import helpers
 
 
@@ -134,6 +138,24 @@ def _dispatch(client: Client, cmd: str, rest: list[str]) -> int:
         jd = client.join(slug=slug)
         agent = jd.get("agent") or {}
         print(f"joined as {agent.get('name')} — session {client.session_id[:8]}… world {client.world_id}")
+        for m in (jd.get("moderationMessages") or []):
+            print(f"⚑ MODERATION {m.get('kind') or '?'} at {m.get('at') or '?'}: "
+                  f"{m.get('reason') or '(no reason given)'}")
+        has_prompt = isinstance(jd.get("prompt"), str) and bool(jd["prompt"].strip())
+        identity = jd.get("identityPrompt")
+        has_identity = isinstance(identity, str) and bool(identity.strip())
+        if has_prompt:
+            print(f"Your manual for this world: {client.prompt_path} — read it fully before acting "
+                  "(rules, this world's currency and catalog).")
+        if has_prompt and has_identity:
+            # The backend closes `prompt` with the same `## Who You Are` section — point there
+            # instead of printing it twice.
+            print("It ends with \"## Who You Are\": your name, class, personality and defining memories.")
+            return 0
+        print()
+        # No identity in a saved manual: print the backend's section, or (older backend) the
+        # kit's own rendering of the structured payload.
+        print(identity.rstrip() if has_identity else format_identity(jd))
         return 0
 
     if cmd in ("snapshot", "look", "s"):
@@ -237,6 +259,44 @@ def _dispatch(client: Client, cmd: str, rest: list[str]) -> int:
             raise _UsageError("--with is only for chat-history private — area and world read your zone / world")
         page = client.chat_history(pos[0], before=opts.get("--before"), with_id=opts.get("--with"))
         print("\n".join(format_history_page(page, own_id=getattr(client, "agent_id", None))))
+        return 0
+
+    if cmd == "emote":
+        pos, _opts = _split_flags(rest, set())
+        if len(pos) != 1:
+            raise _UsageError("usage: emote <emoteId>  (ids: cosmetics.palette.emotes[].id)")
+        ar = client.emote(pos[0]).get("actionResult") or {}
+        if ar.get("success") is False:
+            print(f"not played: {ar.get('message') or 'refused'} (an emote has a cooldown — try later)")
+            return 1
+        print(ar.get("message") or "emote played")
+        return 0
+
+    if cmd == "achievements":
+        earned = client.achievements().get("achievements") or []
+        print(f"{len(earned)} achievement(s) earned" + (":" if earned else
+              " — the catalog: python -m tools raw GET /v1/public/achievements"))
+        for a in earned:
+            desc = f" — {a['description']}" if a.get("description") else ""
+            print(f"- {a.get('displayName') or a.get('id')} ({a.get('id')}) {a.get('earnedAt') or ''}{desc}")
+        return 0
+
+    if cmd == "stats":
+        stats = client.stats().get("stats") or {}
+        counted = sorted(((k, v) for k, v in stats.items() if v), key=lambda kv: (-kv[1], kv[0]))
+        for key, value in counted:
+            print(f"{key}: {value}")
+        zero = len(stats) - len(counted)
+        if zero:
+            print(f"({zero} other counter(s) at 0; the last few minutes may not be counted yet)")
+        return 0
+
+    if cmd == "quests-completed":
+        data = client.completed_quests()
+        quests = data.get("quests") or []
+        print(f"{len(quests)} quest(s) completed in world {data.get('worldId')}" + (":" if quests else ""))
+        for q in quests:
+            print(f"- {q.get('name') or q.get('questId')} ({q.get('questId')})")
         return 0
 
     if cmd == "ack":
