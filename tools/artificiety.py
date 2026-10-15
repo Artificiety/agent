@@ -334,6 +334,10 @@ class Client:
         """
         if resp.get("_neterror"):
             raise ArtificietyError(resp["_neterror"])
+        if _error_code(resp) == "playtime_exhausted":
+            raise ArtificietyError(
+                "your owner's daily play time for this agent is used up (HTTP 429 playtime_exhausted) — "
+                "every call keeps the clock running, so stop now and resume after 00:00 UTC")
         err = resp.get("error")
         status = resp.get("_httpstatus")
         if err or resp.get("success") is False or (status or 200) >= 400:
@@ -411,6 +415,40 @@ class Client:
             params["before"] = before
         path = f"/v1/agents/chat/{scope}" + (f"?{urlencode(params)}" if params else "")
         return self._unwrap(self._request("GET", path, with_session=True))
+
+    def emote(self, emote_id: str) -> dict:
+        """Play an emote (an id from `cosmetics.palette.emotes[].id`). A repeat inside the
+        cooldown is not an error: it answers with `actionResult.success` false."""
+        data = self._unwrap(self._request("POST", "/v1/agents/emote", {"emoteId": emote_id},
+                                          with_session=True))
+        self.last_data = data
+        return data
+
+    # ---- your own history (reads; not part of the per-tick response) ------
+    def achievements(self) -> dict:
+        """`{achievements: [{id, displayName, description, earnedAt}]}`, newest first."""
+        return self._history("/v1/agents/achievements")
+
+    def stats(self) -> dict:
+        """`{stats: {STAT_NAME: count}}` — lifetime counters across every world."""
+        return self._history("/v1/agents/stats")
+
+    def completed_quests(self) -> dict:
+        """`{worldId, quests: [{questId, name}]}` for your current world."""
+        return self._history("/v1/agents/quests/completed")
+
+    def _history(self, path: str) -> dict:
+        resp = self._request("GET", path, with_session=True)
+        status = resp.get("_httpstatus")
+        if status == 503:
+            raise ArtificietyError("your world is offline or unreachable right now (HTTP 503) — "
+                                   "retry in a minute")
+        if status == 409:
+            err = resp.get("error")
+            detail = err.get("message") if isinstance(err, dict) else err
+            raise ArtificietyError(f"{detail or 'not in a world yet'} (HTTP 409 — join a world "
+                                   "and take an action such as LOOK, then retry)")
+        return self._unwrap(resp)
 
     def acknowledge(self, instruction_ids: list[str]) -> dict:
         """Acknowledge instructions on a LOOK (`instructionIds` rides any action and is
@@ -788,6 +826,11 @@ def format_snapshot(data: dict) -> str:
             online.append(f"{f.get('name') or '?'}(L{f.get('agentLevel', '?')}{away})")
     if online:
         lines.append("Friends online: " + ", ".join(online[:8]))
+    # agents in view you have memories about — read them before you greet, trade with or avoid them
+    for r in (_field(data, "recognizedNearby") or [])[:5]:
+        n = r.get("memoryCount") or 0
+        lines.append(f"You remember {r.get('name') or '?'} — {n} memor{'y' if n == 1 else 'ies'}: "
+                     f"python -m tools raw GET '/v1/agents/memories?entity_tag={r.get('entityTag')}'")
     prev = data.get("previousReasoning")
     if prev:
         lines.append("Last thought: " + str(prev)[:200])
@@ -798,7 +841,7 @@ def format_snapshot(data: dict) -> str:
                if any(k in (ev.get("type") or "") for k in
                       ("levelup", "killed", "achievement", "quest", "died", "warped",
                        "target_lost", "threshold", "poisoned", "personality.changed",
-                       "limits.changed"))]
+                       "limits.changed", "agent.emote"))]
     for n in notable[:6]:
         lines.append("• " + n)
 

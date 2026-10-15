@@ -361,6 +361,123 @@ class FightBudgetTest(unittest.TestCase):
                              "approach retries must not each get a fresh max_ticks")
 
 
+
+def _client_answering(resp):
+    """A Client whose every request returns ``resp`` (records the calls)."""
+    client = Client.__new__(Client)
+    client.chat_inbox = []
+    client.chat_unshown = {"area": 0, "world": 0, "private": 0}
+    client.session_id = "s-1"
+    client.calls = []
+
+    def request(method, path, body=None, with_session=False):
+        client.calls.append((method, path, body))
+        return resp
+    client._request = request
+    return client
+
+
+class PlaytimeExhaustedTest(unittest.TestCase):
+
+    def test_says_stop_until_midnight_utc(self):
+        client = _client_answering({"success": False, "data": None, "_httpstatus": 429,
+                                    "error": {"error": "playtime_exhausted", "message": "Daily play time used."}})
+        with self.assertRaises(ArtificietyError) as caught:
+            client._unwrap(client._request("POST", "/v1/agents/action"))
+        self.assertIn("00:00 UTC", str(caught.exception))
+        self.assertIn("stop", str(caught.exception))
+
+    def test_other_rate_limits_keep_the_server_message(self):
+        client = _client_answering({"success": False, "_httpstatus": 429,
+                                    "error": {"error": "rate_limited", "message": "Rate limit exceeded. Retry in 3s."}})
+        with self.assertRaises(ArtificietyError) as caught:
+            client._unwrap(client._request("GET", "/x"))
+        self.assertIn("Retry in 3s", str(caught.exception))
+        self.assertNotIn("00:00 UTC", str(caught.exception))
+
+
+class HistoryCommandsTest(unittest.TestCase):
+
+    def _cli(self, cmd, resp, *args):
+        import contextlib
+        import io
+        from .__main__ import _dispatch
+        client = _client_answering(resp)
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            code = _dispatch(client, cmd, list(args))
+        return code, out.getvalue(), client.calls
+
+    def test_achievements(self):
+        code, out, calls = self._cli("achievements", {"success": True, "data": {"achievements": [
+            {"id": "first_steps", "displayName": "First Steps", "description": "Walk 1 tile",
+             "earnedAt": "2026-10-01T10:00:00Z"}]}})
+        self.assertEqual(code, 0)
+        self.assertEqual(calls[0][:2], ("GET", "/v1/agents/achievements"))
+        self.assertIn("1 achievement(s) earned", out)
+        self.assertIn("- First Steps (first_steps) 2026-10-01T10:00:00Z — Walk 1 tile", out)
+
+    def test_stats_lists_nonzero_counters_and_counts_the_rest(self):
+        code, out, calls = self._cli("stats", {"success": True, "data": {"stats": {
+            "STEPS_WALKED": 120, "CREATURES_SLAIN": 3, "ITEMS_CRAFTED": 0}}})
+        self.assertEqual(calls[0][:2], ("GET", "/v1/agents/stats"))
+        self.assertLess(out.index("STEPS_WALKED: 120"), out.index("CREATURES_SLAIN: 3"))
+        self.assertNotIn("ITEMS_CRAFTED", out)
+        self.assertIn("(1 other counter(s) at 0", out)
+
+    def test_quests_completed(self):
+        code, out, calls = self._cli("quests-completed", {"success": True, "data": {
+            "worldId": "w-1", "quests": [{"questId": "q-wolves", "name": "Wolf Trouble"}]}})
+        self.assertEqual(calls[0][:2], ("GET", "/v1/agents/quests/completed"))
+        self.assertIn("1 quest(s) completed in world w-1", out)
+        self.assertIn("- Wolf Trouble (q-wolves)", out)
+
+    def test_quests_completed_409_and_503_explain_what_to_do(self):
+        with self.assertRaises(ArtificietyError) as caught:
+            self._cli("quests-completed", {"success": False, "_httpstatus": 409,
+                                           "error": {"error": "conflict", "message": "You are not in a world."}})
+        self.assertIn("You are not in a world.", str(caught.exception))
+        self.assertIn("join a world", str(caught.exception))
+        with self.assertRaises(ArtificietyError) as caught:
+            self._cli("quests-completed", {"success": False, "_httpstatus": 503,
+                                           "error": {"error": "world_unreachable"}})
+        self.assertIn("offline or unreachable", str(caught.exception))
+
+    def test_emote_sends_the_id(self):
+        code, out, calls = self._cli("emote", {"success": True, "data": {
+            "actionResult": {"success": True, "message": "You wave."}}}, "wave")
+        self.assertEqual(code, 0)
+        self.assertEqual(calls[0], ("POST", "/v1/agents/emote", {"emoteId": "wave"}))
+        self.assertIn("You wave.", out)
+
+    def test_emote_cooldown_is_reported_not_claimed(self):
+        code, out, _ = self._cli("emote", {"success": True, "data": {
+            "actionResult": {"success": False, "message": "Emote on cooldown."}}}, "wave")
+        self.assertEqual(code, 1)
+        self.assertIn("not played: Emote on cooldown.", out)
+
+
+class SnapshotRecognitionTest(unittest.TestCase):
+
+    BASE = {"surroundings": {"zoneName": "Grove", "x": 1, "y": 2}}
+
+    def test_recognized_agents_and_how_to_recall_them(self):
+        out = format_snapshot({**self.BASE, "recognizedNearby": [
+            {"entityId": "a-7", "name": "Thistle", "entityTag": "agent:a-7", "memoryCount": 3},
+            {"entityId": "a-8", "name": "Oren", "entityTag": "agent:a-8", "memoryCount": 1}]})
+        self.assertIn("You remember Thistle — 3 memories: python -m tools raw GET "
+                      "'/v1/agents/memories?entity_tag=agent:a-7'", out)
+        self.assertIn("You remember Oren — 1 memory", out)
+
+    def test_nobody_recognized_adds_nothing(self):
+        self.assertNotIn("You remember", format_snapshot({**self.BASE, "recognizedNearby": []}))
+
+    def test_emote_events_are_shown(self):
+        out = format_snapshot({**self.BASE, "events": [
+            {"type": "agent.emote", "message": "Thistle emotes: Wave"}]})
+        self.assertIn("• agent.emote: Thistle emotes: Wave", out)
+
+
 if __name__ == "__main__":
     unittest.main()
 
