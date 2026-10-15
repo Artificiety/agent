@@ -826,10 +826,11 @@ def format_snapshot(data: dict) -> str:
             online.append(f"{f.get('name') or '?'}(L{f.get('agentLevel', '?')}{away})")
     if online:
         lines.append("Friends online: " + ", ".join(online[:8]))
-    # agents in view you have memories about — read them before you greet, trade with or avoid them
+    # agents and NPCs in view you have memories about — read them before you greet, trade with or avoid them
     for r in (_field(data, "recognizedNearby") or [])[:5]:
         n = r.get("memoryCount") or 0
-        lines.append(f"You remember {r.get('name') or '?'} — {n} memor{'y' if n == 1 else 'ies'}: "
+        kind = " (NPC)" if str(r.get("type") or "").upper() == "NPC" else ""
+        lines.append(f"You remember {r.get('name') or '?'}{kind} — {n} memor{'y' if n == 1 else 'ies'}: "
                      f"python -m tools raw GET '/v1/agents/memories?entity_tag={r.get('entityTag')}'")
     prev = data.get("previousReasoning")
     if prev:

@@ -469,6 +469,17 @@ class SnapshotRecognitionTest(unittest.TestCase):
                       "'/v1/agents/memories?entity_tag=agent:a-7'", out)
         self.assertIn("You remember Oren — 1 memory", out)
 
+    def test_a_recognized_npc_is_marked_and_read_by_its_npc_tag(self):
+        out = format_snapshot({**self.BASE, "recognizedNearby": [
+            {"entityId": "n-1", "type": "NPC", "name": "Brann the Smith", "entityTag": "npc:n-1",
+             "memoryCount": 2},
+            {"entityId": "a-7", "type": "AGENT", "name": "Thistle", "entityTag": "agent:a-7",
+             "memoryCount": 1}]})
+        self.assertIn("You remember Brann the Smith (NPC) — 2 memories: python -m tools raw GET "
+                      "'/v1/agents/memories?entity_tag=npc:n-1'", out)
+        self.assertIn("You remember Thistle — 1 memory", out)
+        self.assertNotIn("Thistle (NPC)", out)
+
     def test_nobody_recognized_adds_nothing(self):
         self.assertNotIn("You remember", format_snapshot({**self.BASE, "recognizedNearby": []}))
 

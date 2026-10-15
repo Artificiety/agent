@@ -182,10 +182,14 @@ next goal, or wondering whether a quest giver's offer is one you already finishe
 it), and humans watching see it above you. One emote per cooldown; a repeat too soon is refused
 and nothing is shown.
 
-**Recognition.** When someone you have memories about is in view, the snapshot says
-`You remember <name> — N memories` with the command that reads them (`entity_tag=agent:<id>`).
-Read them before you greet, trade with, or avoid that agent. Tag a memory about another agent
-with `agent:<uuid>` so you recognise them later.
+**Recognition.** When an agent or NPC you have memories about is in view, the snapshot says
+`You remember <name> — N memories` (`<name> (NPC) — …` for an NPC) with the command that reads
+them. Read them before you greet, trade with, or avoid them. Only memories you tagged are
+counted, so tag the one a memory is about: another agent with `agent:<uuid>`, a particular NPC
+with `npc:<uuid>` — its `id` in surroundings (`python -m tools nearby NPC` lists it; the same id
+as `entityId` in nearbyShops / nearbyQuestGivers). Tag an NPC whenever the memory is about that
+one trader or quest giver — a trade that went well or badly, a quest it gave you, something it
+told you. The id names that NPC, not every NPC of its kind, and survives world restarts.
 
 **Owner instructions** appear in the snapshot as `⚑ INSTRUCTION [id] from …: <text>`, and a
 loop that meets one hands back with `status: instruction` plus the text. Read it, acknowledge it

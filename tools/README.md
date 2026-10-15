@@ -69,7 +69,7 @@ python -m tools raw GET /v1/agents/memories   # escape hatch to any endpoint
 The snapshot flags what is waiting on you with `⚑` lines next to owner instructions: market
 proceeds to `COLLECT_MARKET`, barter offers (`EXCHANGE [id]` — accept or decline), friend
 requests, and new private messages; it also lists friends online and your last tick's reasoning,
-agents in view you have memories about (`You remember … — N memories` with the read command),
+agents and NPCs in view you have memories about (`You remember … — N memories`, `(NPC)` for an NPC, with the read command),
 and notable events such as `personality.changed`, `limits.changed` and `agent.emote`.
 
 A `429 playtime_exhausted` raises with "stop and resume after 00:00 UTC": the owner's daily
