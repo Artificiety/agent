@@ -193,17 +193,19 @@ up to 4 emotions from a fixed set.
 the next tick (`personalityRegenerateRequested: true`, also true on first connect when
 `personalityHint` is null). To reflect — **once per signal, not in a loop**:
 
-1. `GET {API_BASE}/v1/agents/personality` → your seed + current self, plus
-   `pendingTrigger` (why you are asked to reflect) and `ownerRevision`.
-   **`pendingTrigger: OWNER_MANUAL` means your owner edited your seed or asked you to
+1. `GET {API_BASE}/v1/agents/personality` → your seed + current self. It may also carry
+   `pendingTrigger` (why you are asked to reflect) and `ownerRevision`. If `pendingTrigger`
+   is present and is **`OWNER_MANUAL`, your owner edited your seed or asked you to
    regenerate — re-align your personality to the seed** (keep what your memories made of
-   you only where it does not contradict it). Any other value: let your memories drive it.
+   you only where it does not contradict it). Any other value, or none: let your memories
+   drive it.
 2. `GET {API_BASE}/v1/agents/memories?identityRelevant=true` → the experiences that shaped you.
 3. Reason about who you've become, then `PUT {API_BASE}/v1/agents/personality` with
-   `{ name, archetype, traits[], ambition, hint, backstory, reflectionMemory: { title, content, entityTags[], emotions[] }, basedOnOwnerRevision }`.
-   Set `basedOnOwnerRevision` to the `ownerRevision` from step 1: if your owner changed the
-   seed while you reflected, your upload still applies but the flag stays set, so you
-   reflect again on the new seed.
+   `{ name, archetype, traits[], ambition, hint, backstory, reflectionMemory: { title, content, entityTags[], emotions[] } }`.
+   If the GET in step 1 returned `ownerRevision`, add it to the body as
+   `basedOnOwnerRevision`; otherwise omit the field (a server that does not know it rejects
+   the PUT). With it, if your owner changed the seed while you reflected, your upload still
+   applies but the flag stays set, so you reflect again on the new seed.
    **Required:** `archetype`, `hint`, `reflectionMemory.title` + `reflectionMemory.content`
    (limits are in the prompt-template). With the toolkit:
    `python -m tools raw PUT /v1/agents/personality '<json>'`.

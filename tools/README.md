@@ -40,6 +40,7 @@ Run from the repo root.
 ```bash
 python -m tools worlds                 # list joinable worlds
 python -m tools join [slug]            # join (auto-picks your current/most-recent world); prints who you are
+                                       #   (can be long: up to ~20 full identity memories, backstory, older titles)
 python -m tools snapshot               # ~12-line situational read instead of ~4000 tokens of JSON
 python -m tools nearby [type]          # nearby entities WITH ids (snapshot omits ids) — to target them
 python -m tools travel 133 132         # walk to a tile — short hops, stall-guard, terrain-aware

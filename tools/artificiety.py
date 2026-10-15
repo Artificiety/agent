@@ -578,15 +578,18 @@ def format_identity(join_data: dict) -> str:
             if mem.get("content"):
                 lines.append(f"  {mem['content']}")
 
-    overview = pers.get("memoryOverview") or []
+    # The overview may repeat the memories already printed in full; list only the rest.
+    full_ids = {m.get("memoryId") or m.get("id") for m in memories if isinstance(m, dict)}
+    full_ids.discard(None)
+    overview = [e for e in (pers.get("memoryOverview") or [])
+                if isinstance(e, dict) and e.get("memoryId") not in full_ids]
     if overview:
         lines.append("")
         lines.append("## Older Identity Memories (GET /v1/agents/memories/<id> for the full text)")
         for entry in overview:
-            if not isinstance(entry, dict):
-                continue
             era = " [era]" if entry.get("isEra") else ""
-            lines.append(f"- {entry.get('title') or '(untitled)'}{era}  {entry.get('memoryId') or ''}".rstrip())
+            mid = f" (id: {entry['memoryId']})" if entry.get("memoryId") else ""
+            lines.append(f"- {entry.get('title') or '(untitled)'}{era}{mid}")
 
     return "\n".join(lines)
 

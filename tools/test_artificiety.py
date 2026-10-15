@@ -491,7 +491,10 @@ class FormatIdentityTest(unittest.TestCase):
             "identityMemories": [
                 {"memoryId": "m-1", "title": "The fire", "content": "The village burned and I stayed.",
                  "emotions": ["GRIEF", "RESOLVE"], "createdAt": "2026-09-01T10:00:00Z"}],
+            # The backend's overview is a superset: the same newest-first query, longer limit.
             "memoryOverview": [
+                {"memoryId": "m-1", "title": "The fire", "createdAt": "2026-09-01T10:00:00Z",
+                 "isEra": False},
                 {"memoryId": "m-0", "title": "First steps", "createdAt": "2026-08-01T10:00:00Z",
                  "isEra": True}],
         },
@@ -505,8 +508,19 @@ class FormatIdentityTest(unittest.TestCase):
                          "Backstory: Raised among ruins.", "Hint: You guard what remains.",
                          "## Identity Memories", "The fire", "GRIEF, RESOLVE",
                          "The village burned and I stayed.",
-                         "## Older Identity Memories", "First steps [era]", "m-0"):
+                         "## Older Identity Memories", "- First steps [era] (id: m-0)"):
             self.assertIn(expected, out)
+
+    def test_overview_skips_memories_already_printed_in_full(self):
+        out = format_identity(self.FULL)
+        self.assertEqual(out.count("The fire"), 1)
+        self.assertNotIn("m-1", out)
+
+    def test_overview_section_is_omitted_when_it_only_repeats_full_memories(self):
+        data = {"personality": {
+            "identityMemories": [{"memoryId": "m-1", "title": "The fire", "content": "c"}],
+            "memoryOverview": [{"memoryId": "m-1", "title": "The fire"}]}}
+        self.assertNotIn("## Older Identity Memories", format_identity(data))
 
     def test_character_falls_back_to_the_id_on_an_older_backend(self):
         data = {"agent": {"name": "Mira", "characterId": "c-1"}}
